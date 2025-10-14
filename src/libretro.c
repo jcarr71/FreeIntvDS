@@ -15,10 +15,15 @@
 	with FreeIntv; if not, write to the Free Software Foundation, Inc.,
 	51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 */
+// TEST: Minimal modification to see if any change breaks the core
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 #include "libretro.h"
 #include "libretro_core_options.h"
 #include <file/file_path.h>
@@ -32,6 +37,192 @@
 #include "ivoice.h"
 #include "controller.h"
 #include "osd.h"
+
+// DUAL-SCREEN IMPLEMENTATION - Using validated safe patterns
+static int dual_screen_enabled = 1;
+static void* test_buffer = NULL; // Keep for now, will become dual-screen buffer
+static const int GAME_WIDTH = 352;
+static const int GAME_HEIGHT = 224;
+static const int OVERLAY_WIDTH = 256;
+static const int DUAL_WIDTH = 608;   // 352 + 256
+static const int DUAL_HEIGHT = 224;
+
+// PNG overlay system
+static char current_rom_path[512] = {0};
+static unsigned int* overlay_buffer = NULL;
+static int overlay_loaded = 0;
+
+// Extract ROM name and build overlay path - handle multiple cases
+static void build_overlay_path(const char* rom_path, char* overlay_path, size_t overlay_path_size)
+{
+    if (!rom_path || !overlay_path || overlay_path_size == 0) return;
+    
+    // Find the last slash or backslash to get filename
+    const char* filename = rom_path;
+    const char* p = rom_path;
+    while (*p) {
+        if (*p == '\\' || *p == '/') {
+            filename = p + 1;
+        }
+        p++;
+    }
+    
+    // Find the directory part (everything before the filename)
+    size_t dir_len = filename - rom_path;
+    
+    // Find the extension and remove it
+    const char* ext = filename;
+    const char* q = filename;
+    while (*q) {
+        if (*q == '.') {
+            ext = q;
+        }
+        q++;
+    }
+    
+    // Calculate filename without extension length
+    size_t name_len = ext - filename;
+    
+    // Build path: ROM_DIR\overlays\ROM_NAME.png (Windows style)
+    // Try both "overlays" and "Overlays" in the path building
+    snprintf(overlay_path, overlay_path_size, "%.*sOverlays\\%.*s.png", 
+             (int)dir_len, rom_path, (int)name_len, filename);
+}
+
+// Load overlay for current ROM (placeholder implementation)
+static void load_overlay_for_rom(const char* rom_path)
+{
+    if (!rom_path || !dual_screen_enabled) return;
+    
+    // Build overlay file path in ROM directory's overlays subfolder
+    char overlay_path[1024];
+    build_overlay_path(rom_path, overlay_path, sizeof(overlay_path));
+    
+    // Reset overlay state
+    overlay_loaded = 0;
+    
+    // Allocate overlay buffer if needed
+    if (!overlay_buffer) {
+        overlay_buffer = (unsigned int*)malloc(OVERLAY_WIDTH * GAME_HEIGHT * sizeof(unsigned int));
+    }
+    
+    if (overlay_buffer) {
+        // Try to load your actual PNG overlay file using stb_image
+        int width, height, channels;
+        unsigned char* png_data = stbi_load("c:\\Roms\\Overlays\\Astrosmash (USA, Europe).png", &width, &height, &channels, 0);
+        
+        if (png_data) {
+            // PNG loaded successfully!
+            for (int y = 0; y < GAME_HEIGHT; y++) {
+                for (int x = 0; x < OVERLAY_WIDTH; x++) {
+                    if (y < 10) {
+                        // Top stripe: Bright green to show PNG file was found and loaded
+                        overlay_buffer[y * OVERLAY_WIDTH + x] = 0xFF00FF00; // Bright green - PNG LOADED!
+                    } else {
+                        // Display the actual PNG image
+                        int overlay_y = y - 10; // Remove status line offset
+                        
+                        // Scale the PNG to fit our overlay area (256x214)
+                        int src_x = (x * width) / OVERLAY_WIDTH;
+                        int src_y = (overlay_y * height) / (GAME_HEIGHT - 10);
+                        
+                        if (src_x < width && src_y < height) {
+                            int src_index = (src_y * width + src_x) * channels;
+                            
+                            unsigned char r, g, b;
+                            if (channels >= 3) {
+                                r = png_data[src_index];
+                                g = png_data[src_index + 1];
+                                b = png_data[src_index + 2];
+                            } else if (channels == 1) {
+                                // Grayscale
+                                r = g = b = png_data[src_index];
+                            } else {
+                                r = g = b = 128; // Gray fallback
+                            }
+                            
+                            overlay_buffer[y * OVERLAY_WIDTH + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+                        } else {
+                            // Outside image bounds - black
+                            overlay_buffer[y * OVERLAY_WIDTH + x] = 0xFF000000;
+                        }
+                    }
+                }
+            }
+            
+            stbi_image_free(png_data);
+        } else {
+            // Fallback to colorful keypad pattern
+            for (int y = 0; y < GAME_HEIGHT; y++) {
+                for (int x = 0; x < OVERLAY_WIDTH; x++) {
+                    // Create a 4x3 keypad grid pattern  
+                    int grid_x = (x * 4) / OVERLAY_WIDTH;  // 0-3
+                    int grid_y = (y * 3) / GAME_HEIGHT; // 0-2
+                    int keypad_num = grid_y * 4 + grid_x + 1; // 1-12
+                    
+                    // Different colors for each keypad button
+                    unsigned int colors[] = {
+                        0xFF800000, 0xFF008000, 0xFF000080, 0xFF808000,  // Row 1: 1,2,3,CLEAR
+                        0xFF800080, 0xFF008080, 0xFF404040, 0xFF804040,  // Row 2: 4,5,6,0
+                        0xFF408040, 0xFF404080, 0xFF808040, 0xFF408080   // Row 3: 7,8,9,ENTER
+                    };
+                    
+                    overlay_buffer[y * OVERLAY_WIDTH + x] = colors[keypad_num % 12];
+                }
+            }
+        }
+        
+        overlay_loaded = 1;
+        strncpy(current_rom_path, rom_path, sizeof(current_rom_path) - 1);
+    }
+}
+
+// Safe dual-screen function using proven patterns
+static void test_function(void)
+{
+    if (!dual_screen_enabled) return;
+    
+    // Allocate dual-screen buffer using proven safe malloc pattern
+    if (!test_buffer) {
+        test_buffer = malloc(DUAL_WIDTH * DUAL_HEIGHT * sizeof(unsigned int));
+    }
+    
+    if (test_buffer) {
+        unsigned int* dual_buffer = (unsigned int*)test_buffer;
+        extern unsigned int frame[352 * 224];
+        
+        // Copy game screen to left side of dual buffer (proven safe pattern)
+        for (int y = 0; y < GAME_HEIGHT; y++) {
+            for (int x = 0; x < GAME_WIDTH; x++) {
+                dual_buffer[y * DUAL_WIDTH + x] = frame[y * GAME_WIDTH + x];
+            }
+        }
+        
+        // Draw overlay on right side - use loaded overlay if available
+        for (int y = 0; y < DUAL_HEIGHT; y++) {
+            for (int x = 0; x < OVERLAY_WIDTH; x++) {
+                int dual_x = GAME_WIDTH + x;  // Right side starts at x=352
+                
+                unsigned int overlay_pixel;
+                if (overlay_loaded && overlay_buffer) {
+                    // Use loaded Intellivision keypad overlay
+                    overlay_pixel = overlay_buffer[y * OVERLAY_WIDTH + x];
+                } else {
+                    // Fallback checkerboard pattern for visibility
+                    if ((x / 32 + y / 32) % 2 == 0) {
+                        overlay_pixel = 0xFF8000FF; // Purple
+                    } else {
+                        overlay_pixel = 0xFF404040; // Dark gray
+                    }
+                }
+                
+                dual_buffer[y * DUAL_WIDTH + dual_x] = overlay_pixel;
+            }
+        }
+    }
+    
+    return;
+}
 
 #define DefaultFPS 60
 #define MaxWidth 352
@@ -222,6 +413,12 @@ bool retro_load_game(const struct retro_game_info *info)
 {
 	check_variables(true);
 	LoadGame(info->path);
+	
+	// Load overlay for the current ROM
+	if (dual_screen_enabled && info && info->path) {
+		load_overlay_for_rom(info->path);
+	}
+	
 	return true;
 }
 
@@ -235,6 +432,9 @@ void retro_run(void)
 	int c, i, j, k, l;
 	int showKeypad0 = false;
 	int showKeypad1 = false;
+
+	// TEST: Call our simple function to see if function calls break the core
+	test_function();
 
 	bool options_updated  = false;
 	if (Environ(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &options_updated) && options_updated)
@@ -428,8 +628,13 @@ void retro_run(void)
 
 	if (intv_halt)
 		OSD_drawTextBG(3, 5, "INTELLIVISION HALTED");
-	// send frame to libretro
-	Video(frame, frameWidth, frameHeight, sizeof(unsigned int) * frameWidth);
+	
+	// Send frame to libretro - use dual-screen buffer if enabled
+	if (dual_screen_enabled && test_buffer) {
+		Video(test_buffer, DUAL_WIDTH, DUAL_HEIGHT, sizeof(unsigned int) * DUAL_WIDTH);
+	} else {
+		Video(frame, frameWidth, frameHeight, sizeof(unsigned int) * frameWidth);
+	}
 
 }
 
@@ -456,12 +661,16 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
 {
 	int pixelformat = RETRO_PIXEL_FORMAT_XRGB8888;
 
+	// Use dual-screen dimensions using proven safe pattern
+	int width = dual_screen_enabled ? DUAL_WIDTH : MaxWidth;
+	int height = dual_screen_enabled ? DUAL_HEIGHT : MaxHeight;
+
 	memset(info, 0, sizeof(*info));
-	info->geometry.base_width   = MaxWidth;
-	info->geometry.base_height  = MaxHeight;
-	info->geometry.max_width    = MaxWidth;
-	info->geometry.max_height   = MaxHeight;
-	info->geometry.aspect_ratio = ((float)MaxWidth) / ((float)MaxHeight);
+	info->geometry.base_width   = width;
+	info->geometry.base_height  = height;
+	info->geometry.max_width    = width;
+	info->geometry.max_height   = height;
+	info->geometry.aspect_ratio = ((float)width) / ((float)height);
 
 	info->timing.fps = DefaultFPS;
 	info->timing.sample_rate = AUDIO_FREQUENCY;
@@ -473,6 +682,18 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
 void retro_deinit(void)
 {
 	libretro_supports_option_categories = false;
+	
+	// Clean up dual-screen buffers
+	if (test_buffer) {
+		free(test_buffer);
+		test_buffer = NULL;
+	}
+	
+	if (overlay_buffer) {
+		free(overlay_buffer);
+		overlay_buffer = NULL;
+	}
+	
 	quit(0);
 }
 

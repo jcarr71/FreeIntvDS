@@ -1,5 +1,5 @@
 Overview
-- This repo is the FreeIntv libretro core (C). It builds into a libretro plugin (freeintv_libretro.*) and depends on libretro-common headers in `src/deps/libretro-common`.
+ This repo contains the FreeIntvDS libretro core (C), a standalone Intellivision emulator core. It builds into a libretro plugin (`freeintvds_libretro.*`) and depends on libretro-common headers in `src/deps/libretro-common`. FreeIntvDS is distinct from the original FreeIntv core and is intended to stand on its own.
 
 Key areas for an agent to read first
 - `README.md` — high-level constraints: requires `exec.bin` and `grom.bin` in the libretro system dir.
@@ -18,12 +18,22 @@ Architecture summary (big picture)
 - Data flow: libretro input -> `retro_run()` -> input state translated into Intellivision controller state -> `Run()` invokes `exec()` which advances CPU cycles -> STIC renders frames and PSG/ivoice generate audio -> libretro callbacks `Video()` and `Audio()` sink output.
 
 Build and developer workflows (discovered)
-- Normal build (Unix / Windows MinGW): run `make` in the repo root. It uses `Makefile` + `Makefile.common`.
-- Cross-platform flags: set `platform=` (e.g., `make platform=osx`, `make platform=libnx`) or set `DEBUG=1` for debug symbols.
-- Android: `jni/Android.mk` references `Makefile.common`; build via the Android NDK build system (`ndk-build`/Gradle) using the `jni` directory.
-- Quick checks and tests: there are no automated unit tests in the repo. Fast checks are: `make clean && make` and then load the resulting `freeintv_libretro.*` in a libretro frontend (RetroArch) with `exec.bin`/`grom.bin` available.
+ Windows build workflow:
+ - Install MinGW-w64 and ensure its `bin` directory is in your PATH.
+ - Use `mingw32-make` instead of `make` in PowerShell or VS Code terminal:
+   ```powershell
+   mingw32-make clean
+   mingw32-make
+   ```
+ - Output will be `freeintvds_libretro.dll` (for FreeIntvDS) or `freeintv_libretro.dll` (for FreeIntv).
+ - If you update PATH, restart VS Code to reload environment variables.
 
-- Dual-screen variant: A `freeintvds` target was added. Run `make freeintvds` to build `freeintvds_libretro.*`.
+ Cross-platform and advanced builds:
+ - Set `platform=` (e.g., `make platform=osx`, `make platform=libnx`) or `DEBUG=1` for debug symbols.
+ - For Android, use the NDK build system in the `jni` directory.
+
+ Quick checks and tests:
+ - No automated unit tests. Fast checks: build and load the resulting core in a libretro frontend (RetroArch) with `exec.bin`/`grom.bin` available.
 - Implementation note: DS-specific code should be guarded by the `FREEINTV_DS` compile define (compile with `-DFREEINTV_DS`) and placed in `src/ds_stub.c` (or other files added via the `EXTRA_SOURCES` make variable). `Makefile.common` accepts `EXTRA_SOURCES` so DS-only files can be appended when building.
 
 Project-specific conventions & patterns
@@ -31,6 +41,11 @@ Project-specific conventions & patterns
 - Single-file responsibilities: each hardware component is a single C file (cpu, stic, psg, ivoice); prefer edits within the owning file for local behavior.
 - Serialization/versioning: save state uses a `SERIALIZED_VERSION` in `src/libretro.c`; when changing state layout update serialize/deserialize code and bump version.
 - BIOS paths: `retro_init()` calls `Environ(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &SystemPath)` and then expects `exec.bin` and `grom.bin` in that directory — don't hardcode paths.
+
+Overlay conventions:
+- Each game can have a custom numeric pad overlay PNG in an `overlays` subfolder inside the Intellivision ROM folder.
+- Overlay PNG filenames must match the No-Intro ROM filename (e.g., `overlays/Space Armada (USA).png`).
+- At runtime, the core should detect and load the matching overlay for the second screen.
 
 Integration points & external deps
 - Depends on `libretro-common` under `src/deps/libretro-common` for portability helpers (file_path, compat). When adding features prefer these helpers.
