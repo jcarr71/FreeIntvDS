@@ -656,3 +656,9 @@ endif
 
 clean:
 	rm -f $(OBJECTS) $(TARGET)
+
+.PHONY: freeintvds
+# Build a separate dual-screen variant named freeintvds_libretro.*
+# It invokes the same Makefile but overrides TARGET_NAME and adds a compile define.
+freeintvds:
+	$(MAKE) TARGET_NAME=freeintvds CFLAGS="$(CFLAGS) -DFREEINTV_DS" EXTRA_SOURCES=src/ds_stub.c all

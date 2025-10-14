@@ -16,6 +16,10 @@ SOURCES_C   := \
 	$(SOURCE_DIR)/psg.c \
 	$(SOURCE_DIR)/stic.c
 
+# Extra sources can be provided by setting EXTRA_SOURCES when invoking make
+EXTRA_SOURCES ?=
+SOURCES_C += $(EXTRA_SOURCES)
+
 ifeq ($(STATIC_LINKING),1)
 else
 SOURCES_C += $(LIBRETRO_COMM_DIR)/file/file_path.c \

@@ -441,8 +441,13 @@ unsigned retro_get_region(void)
 void retro_get_system_info(struct retro_system_info *info)
 {
 	memset(info, 0, sizeof(*info));
+#ifdef FREEINTV_DS
+	info->library_name = "FreeIntvDS";
+	info->library_version = "1.2-ds";
+#else
 	info->library_name = "FreeIntv";
 	info->library_version = "1.2";
+#endif
 	info->valid_extensions = "int|bin|rom";
 	info->need_fullpath = true;
 }
