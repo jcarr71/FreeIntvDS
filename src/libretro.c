@@ -52,12 +52,16 @@ static char current_rom_path[512] = {0};
 static unsigned int* overlay_buffer = NULL;
 static int overlay_loaded = 0;
 
-// Extract ROM name and build overlay path - handle multiple cases
+// Extract ROM name and build overlay path - handle ZIP extraction
 static void build_overlay_path(const char* rom_path, char* overlay_path, size_t overlay_path_size)
 {
     if (!rom_path || !overlay_path || overlay_path_size == 0) return;
     
-    // Find the last slash or backslash to get filename
+    // Check if this looks like a temp/extracted path
+    bool is_temp_path = (strstr(rom_path, "temp") != NULL) || 
+                       (strstr(rom_path, "Temp") != NULL) ||
+                       (strstr(rom_path, "extract") != NULL);
+    
     const char* filename = rom_path;
     const char* p = rom_path;
     while (*p) {
@@ -67,10 +71,7 @@ static void build_overlay_path(const char* rom_path, char* overlay_path, size_t 
         p++;
     }
     
-    // Find the directory part (everything before the filename)
-    size_t dir_len = filename - rom_path;
-    
-    // Find the extension and remove it
+    // Remove extension to get base name
     const char* ext = filename;
     const char* q = filename;
     while (*q) {
@@ -79,24 +80,48 @@ static void build_overlay_path(const char* rom_path, char* overlay_path, size_t 
         }
         q++;
     }
-    
-    // Calculate filename without extension length
     size_t name_len = ext - filename;
     
-    // Build path: ROM_DIR\overlays\ROM_NAME.png (Windows style)
-    // Try both "overlays" and "Overlays" in the path building
-    snprintf(overlay_path, overlay_path_size, "%.*sOverlays\\%.*s.png", 
-             (int)dir_len, rom_path, (int)name_len, filename);
+    if (is_temp_path) {
+        // If extracted, try common ROM locations instead of temp path
+        const char* common_paths[] = {
+            "C:\\RetroArch-Win64\\roms\\intellivision\\overlays\\%.*s.jpg",
+            "C:\\RetroArch-Win64\\roms\\overlays\\%.*s.jpg", 
+            "C:\\RetroArch\\roms\\intellivision\\overlays\\%.*s.jpg",
+            "C:\\RetroArch\\roms\\overlays\\%.*s.jpg",
+            "roms\\intellivision\\overlays\\%.*s.jpg",
+            "roms\\overlays\\%.*s.jpg"
+        };
+        
+        // Try first common path as primary
+        snprintf(overlay_path, overlay_path_size, common_paths[0], (int)name_len, filename);
+    } else {
+        // Normal path - build relative to ROM directory
+        size_t dir_len = filename - rom_path;
+        snprintf(overlay_path, overlay_path_size, "%.*sOverlays\\%.*s.jpg", 
+                 (int)dir_len, rom_path, (int)name_len, filename);
+    }
 }
 
 // Load overlay for current ROM (placeholder implementation)
 static void load_overlay_for_rom(const char* rom_path)
 {
+    // VERY FIRST THING - write to debug log to prove new code is running
+    FILE* early_debug = fopen("freeintvds_debug.txt", "a");
+    if (early_debug) {
+        fprintf(early_debug, "=== NEW BUILD v3 LOADED ===\n");
+        fclose(early_debug);
+    }
+    
     if (!rom_path || !dual_screen_enabled) return;
     
     // Build overlay file path in ROM directory's overlays subfolder
     char overlay_path[1024];
     build_overlay_path(rom_path, overlay_path, sizeof(overlay_path));
+    
+    // Debug: Log the paths being used (you can remove this later)
+    printf("[DEBUG] ROM path: %s\n", rom_path);
+    printf("[DEBUG] Overlay path: %s\n", overlay_path);
     
     // Reset overlay state
     overlay_loaded = 0;
@@ -107,67 +132,230 @@ static void load_overlay_for_rom(const char* rom_path)
     }
     
     if (overlay_buffer) {
-        // Try to load your actual PNG overlay file using stb_image
+        // Try to load image using stb_image, but with simpler processing
         int width, height, channels;
-        unsigned char* png_data = stbi_load("c:\\Roms\\Overlays\\Astrosmash (USA, Europe).png", &width, &height, &channels, 0);
+        unsigned char* img_data = NULL;
         
-        if (png_data) {
-            // PNG loaded successfully!
+        // Create a simple debug log file we can easily find
+        FILE* debug_log = fopen("freeintvds_debug.txt", "a");
+        if (debug_log) {
+            fprintf(debug_log, "\n=== FreeIntvDS Debug ===\n");
+            fprintf(debug_log, "ROM path: '%s'\n", rom_path);
+            fprintf(debug_log, "Primary overlay path: '%s'\n", overlay_path);
+            fclose(debug_log);
+        }
+        
+        // Try multiple paths with detailed logging
+        printf("[DEBUG] ROM path: '%s'\n", rom_path);
+        printf("[DEBUG] Primary overlay path: '%s'\n", overlay_path);
+        
+        img_data = stbi_load(overlay_path, &width, &height, &channels, 0); // Load in original format
+        
+        if (!img_data) {
+            // Try multiple common ROM locations since RetroArch extracted to temp
+            char fallback_path[1024];
+            
+            debug_log = fopen("freeintvds_debug.txt", "a");
+            
+            // Get just the filename without extension
+            const char* filename = strrchr(rom_path, '\\');
+            if (!filename) filename = strrchr(rom_path, '/');
+            if (filename) filename++; else filename = rom_path;
+            
+            const char* ext = strrchr(filename, '.');
+            size_t name_len = ext ? (ext - filename) : strlen(filename);
+            
+            // Try common RetroArch ROM directory structures
+            const char* overlay_patterns[] = {
+                "C:\\RetroArch-Win64\\roms\\intellivision\\overlays\\%.*s.jpg",
+                "C:\\RetroArch-Win64\\roms\\intellivision\\overlays\\%.*s.png",
+                "C:\\RetroArch-Win64\\roms\\overlays\\%.*s.jpg",
+                "C:\\RetroArch-Win64\\roms\\overlays\\%.*s.png",
+                "C:\\RetroArch\\roms\\intellivision\\overlays\\%.*s.jpg", 
+                "C:\\RetroArch\\roms\\intellivision\\overlays\\%.*s.png",
+                "C:\\RetroArch\\roms\\overlays\\%.*s.jpg",
+                "C:\\RetroArch\\roms\\overlays\\%.*s.png",
+                "roms\\intellivision\\overlays\\%.*s.jpg",
+                "roms\\intellivision\\overlays\\%.*s.png",
+                "roms\\overlays\\%.*s.jpg", 
+                "roms\\overlays\\%.*s.png",
+                NULL
+            };
+            
+            for (int i = 0; overlay_patterns[i] != NULL; i++) {
+                snprintf(fallback_path, sizeof(fallback_path), overlay_patterns[i], (int)name_len, filename);
+                printf("[DEBUG] Trying pattern %d: '%s'\n", i+1, fallback_path);
+                if (debug_log) fprintf(debug_log, "Trying pattern %d: '%s'\n", i+1, fallback_path);
+                
+                img_data = stbi_load(fallback_path, &width, &height, &channels, 0); // Load in original format
+                if (img_data) {
+                    printf("[DEBUG] SUCCESS: Found image at '%s'\n", fallback_path);
+                    if (debug_log) fprintf(debug_log, "SUCCESS: Found image at '%s'\n", fallback_path);
+                    break;
+                }
+            }
+            
+            if (!img_data && debug_log) {
+                fprintf(debug_log, "No overlay found at any common location\n");
+            }
+            
+            if (debug_log) fclose(debug_log);
+        } else {
+            printf("[DEBUG] SUCCESS: Found image at primary path\n");
+            debug_log = fopen("freeintvds_debug.txt", "a");
+            if (debug_log) {
+                fprintf(debug_log, "SUCCESS: Found image at primary path\n");
+                fclose(debug_log);
+            }
+        }
+        
+        if (img_data) {
+            printf("[DEBUG] Image loaded successfully: %dx%d, %d channels\n", width, height, channels);
+            
+            // Add detailed debugging about the image data
+            debug_log = fopen("freeintvds_debug.txt", "a");
+            if (debug_log) {
+                fprintf(debug_log, "Image dimensions: %dx%d, channels=%d (BUILD-v2)\n", width, height, channels);
+                fprintf(debug_log, "First few pixels: ");
+                if (channels == 3) {
+                    for (int i = 0; i < 9 && i < width * height * channels; i += channels) {
+                        fprintf(debug_log, "(%d,%d,%d) ", img_data[i], img_data[i+1], img_data[i+2]);
+                    }
+                } else if (channels == 4) {
+                    for (int i = 0; i < 12 && i < width * height * channels; i += channels) {
+                        fprintf(debug_log, "(%d,%d,%d,%d) ", img_data[i], img_data[i+1], img_data[i+2], img_data[i+3]);
+                    }
+                } else {
+                    for (int i = 0; i < 3 && i < width * height * channels; i += channels) {
+                        fprintf(debug_log, "(%d) ", img_data[i]);
+                    }
+                }
+                fprintf(debug_log, "\n");
+                fclose(debug_log);
+            }
+            
+            // Add pixel processing debug to file log
+            debug_log = fopen("freeintvds_debug.txt", "a");
+            if (debug_log) {
+                fprintf(debug_log, "Starting pixel processing loop...\n");
+                fclose(debug_log);
+            }
+            
+            printf("[DEBUG] PNG loaded: %dx%d, %d channels (BUILD-v2)\n", width, height, channels);
+            printf("[DEBUG] Expected display area: %dx%d\n", OVERLAY_WIDTH, GAME_HEIGHT);
+            printf("[DEBUG] Starting pixel processing loop...\n");
+            
+            // Add detailed debugging about coordinate mapping
+            debug_log = fopen("freeintvds_debug.txt", "a");
+            if (debug_log) {
+                fprintf(debug_log, "PNG dimensions: %dx%d\n", width, height);
+                fprintf(debug_log, "Display area: %dx%d\n", OVERLAY_WIDTH, GAME_HEIGHT);
+                fprintf(debug_log, "Expected pixels: %d\n", width * height);
+                fclose(debug_log);
+            }
+            
+            // Now display the actual PNG with VERY careful bounds checking
+            int pixels_processed = 0;
+            int pixels_in_bounds = 0;
+            
             for (int y = 0; y < GAME_HEIGHT; y++) {
+                int row_pixels_processed = 0;
                 for (int x = 0; x < OVERLAY_WIDTH; x++) {
-                    if (y < 10) {
-                        // Top stripe: Bright green to show PNG file was found and loaded
-                        overlay_buffer[y * OVERLAY_WIDTH + x] = 0xFF00FF00; // Bright green - PNG LOADED!
-                    } else {
-                        // Display the actual PNG image
-                        int overlay_y = y - 10; // Remove status line offset
+                    // Display PNG with 1:1 mapping (no scaling)
+                    int png_x = x;
+                    int png_y = y;  // Direct 1:1 mapping, no offset
+                    
+                    // Very conservative bounds checking
+                    if (png_x >= 0 && png_x < width && png_y >= 0 && png_y < height) {
+                        pixels_in_bounds++;
+                        row_pixels_processed++;
                         
-                        // Scale the PNG to fit our overlay area (256x214)
-                        int src_x = (x * width) / OVERLAY_WIDTH;
-                        int src_y = (overlay_y * height) / (GAME_HEIGHT - 10);
+                        // Calculate source index based on actual channel count
+                        int src_index = (png_y * width + png_x) * channels;
+                        int max_index = width * height * channels;
                         
-                        if (src_x < width && src_y < height) {
-                            int src_index = (src_y * width + src_x) * channels;
-                            
-                            unsigned char r, g, b;
-                            if (channels >= 3) {
-                                r = png_data[src_index];
-                                g = png_data[src_index + 1];
-                                b = png_data[src_index + 2];
-                            } else if (channels == 1) {
-                                // Grayscale
-                                r = g = b = png_data[src_index];
+                        if (src_index >= 0 && src_index + (channels-1) < max_index) {
+                            pixels_processed++;
+                                
+                                // Extract pixel data based on channel count
+                                unsigned char r, g, b;
+                                
+                                if (channels == 1) {
+                                    // Grayscale
+                                    r = g = b = img_data[src_index];
+                                } else if (channels == 3) {
+                                    // RGB
+                                    r = img_data[src_index + 0];
+                                    g = img_data[src_index + 1];
+                                    b = img_data[src_index + 2];
+                                } else if (channels == 4) {
+                                    // RGBA (ignore alpha for now)
+                                    r = img_data[src_index + 0];
+                                    g = img_data[src_index + 1];
+                                    b = img_data[src_index + 2];
+                                    // unsigned char a = img_data[src_index + 3];
+                                } else {
+                                    // Unknown format - use red to indicate error
+                                    r = 255; g = 0; b = 0;
+                                }
+                                
+                                // Debug first few pixels to verify data (minimal logging)
+                                if (png_x == 0 && png_y == 0) {
+                                    printf("[PIXEL] First pixel RGB(%d,%d,%d)\n", r, g, b);
+                                }
+                                
+                                // Simple ARGB format (no bit shifting tricks)
+                                unsigned int pixel = 0xFF000000;  // Alpha = 255
+                                pixel |= ((unsigned int)r) << 16;  // Red
+                                pixel |= ((unsigned int)g) << 8;   // Green  
+                                pixel |= ((unsigned int)b);        // Blue
+                                
+                                overlay_buffer[y * OVERLAY_WIDTH + x] = pixel;
                             } else {
-                                r = g = b = 128; // Gray fallback
+                                // Bounds error - bright red
+                                overlay_buffer[y * OVERLAY_WIDTH + x] = 0xFFFF0000;
                             }
-                            
-                            overlay_buffer[y * OVERLAY_WIDTH + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
                         } else {
-                            // Outside image bounds - black
-                            overlay_buffer[y * OVERLAY_WIDTH + x] = 0xFF000000;
+                            // Outside PNG bounds - dark blue  
+                            overlay_buffer[y * OVERLAY_WIDTH + x] = 0xFF000080;
                         }
                     }
                 }
             }
             
-            stbi_image_free(png_data);
+            printf("[DEBUG] PNG overlay processing completed successfully\n");
+            
+            // Add results to file log
+            debug_log = fopen("freeintvds_debug.txt", "a");
+            if (debug_log) {
+                fprintf(debug_log, "PNG overlay processing completed\n");
+                fclose(debug_log);
+            }
+            
+            stbi_image_free(img_data);
         } else {
-            // Fallback to colorful keypad pattern
+            printf("[DEBUG] No image found, using test pattern\n");
+            
+            // If no image, create a simple Intellivision keypad layout
             for (int y = 0; y < GAME_HEIGHT; y++) {
                 for (int x = 0; x < OVERLAY_WIDTH; x++) {
-                    // Create a 4x3 keypad grid pattern  
-                    int grid_x = (x * 4) / OVERLAY_WIDTH;  // 0-3
-                    int grid_y = (y * 3) / GAME_HEIGHT; // 0-2
-                    int keypad_num = grid_y * 4 + grid_x + 1; // 1-12
+                    // Create a simple 4x3 grid for Intellivision keypad
+                    int grid_x = x / (OVERLAY_WIDTH / 4);  // 0-3 
+                    int grid_y = y / (GAME_HEIGHT / 3);   // 0-2
                     
-                    // Different colors for each keypad button
+                    // Keypad numbers: 1,2,3,C / 4,5,6,0 / 7,8,9,E
                     unsigned int colors[] = {
-                        0xFF800000, 0xFF008000, 0xFF000080, 0xFF808000,  // Row 1: 1,2,3,CLEAR
-                        0xFF800080, 0xFF008080, 0xFF404040, 0xFF804040,  // Row 2: 4,5,6,0
-                        0xFF408040, 0xFF404080, 0xFF808040, 0xFF408080   // Row 3: 7,8,9,ENTER
+                        0xFF400000, 0xFF004000, 0xFF000040, 0xFF404000,  // Row 1: dark colors
+                        0xFF400040, 0xFF004040, 0xFF202020, 0xFF402020,  // Row 2: medium colors  
+                        0xFF204020, 0xFF202040, 0xFF404020, 0xFF204040   // Row 3: mixed colors
                     };
                     
-                    overlay_buffer[y * OVERLAY_WIDTH + x] = colors[keypad_num % 12];
+                    int color_index = grid_y * 4 + grid_x;
+                    if (color_index < 12) {
+                        overlay_buffer[y * OVERLAY_WIDTH + x] = colors[color_index];
+                    } else {
+                        overlay_buffer[y * OVERLAY_WIDTH + x] = 0xFF101010; // Very dark gray
+                    }
                 }
             }
         }
@@ -175,7 +363,6 @@ static void load_overlay_for_rom(const char* rom_path)
         overlay_loaded = 1;
         strncpy(current_rom_path, rom_path, sizeof(current_rom_path) - 1);
     }
-}
 
 // Safe dual-screen function using proven patterns
 static void test_function(void)
@@ -411,6 +598,24 @@ void retro_init(void)
 
 bool retro_load_game(const struct retro_game_info *info)
 {
+	// Simpler debug approach - try multiple paths
+	FILE* debug_log = fopen("C:\\temp\\freeintvds_debug.txt", "w");
+	if (!debug_log) debug_log = fopen("freeintvds_debug.txt", "w");
+	if (!debug_log) debug_log = fopen("debug.txt", "w");
+	
+	if (debug_log) {
+		fprintf(debug_log, "=== FreeIntvDS Load Game Debug ===\n");
+		fprintf(debug_log, "Function called successfully\n");
+		if (info && info->path) {
+			fprintf(debug_log, "ROM path: '%s'\n", info->path);
+			fprintf(debug_log, "Dual screen: %s\n", dual_screen_enabled ? "YES" : "NO");
+		} else {
+			fprintf(debug_log, "No ROM info provided\n");
+		}
+		fflush(debug_log);
+		fclose(debug_log);
+	}
+	
 	check_variables(true);
 	LoadGame(info->path);
 	
