@@ -1,18 +1,19 @@
-# FreeIntv
-FreeIntv is a libretro emulation core for the Mattel Intellivision designed to be compatible with joypads from the SNES era forward even if they originally required a number pad.
+# FreeIntvDS
+FreeIntvDS is a libretro core for the Intellivision console with **dual-screen support**, designed for dual-screen handheld devices like the Ayaneo Pocket DS.
 
-## Authors
+Based on FreeIntv by David Richardson, with enhancements by Oscar Toledo G. and Joe Zbiciak.
 
-FreeIntv was created by David Richardson.
-The PSG and STIC emulation was made closer to hardware and optimized by Oscar Toledo G. (nanochess), who also added save states.
+## Features
+- **Dual-screen display**: Game on left (352x224), controller overlay on right (256x224)
+- **Custom overlays**: Load game-specific or default controller images from system directory
+- **Bilinear scaling**: Smooth overlay rendering with interpolation
+- **ZIP support**: Works with archived ROMs (overlays matched by ROM name)
+- Standard Intellivision emulation (CPU, PSG, STIC, Intellivoice)
 
-The Intellivoice code has been contributed by Joe Zbiciak (author of jzintv), and adapted by Oscar Toledo G. (nanochess)
+## Quick Start
 
-## License
-The FreeIntv core is licensed under GPLv2+. More information at https://github.com/libretro/FreeIntv/blob/master/LICENSE
-
-## BIOS
-FreeIntv requires two Intellivision BIOS files to be placed in the libretro 'system' folder:
+### BIOS Requirements
+Place these files in RetroArch's **system** directory:
 
 | Function | Filename* | MD5 Hash |
 | --- | --- | --- | 
@@ -20,6 +21,16 @@ FreeIntv requires two Intellivision BIOS files to be placed in the libretro 'sys
 | Graphics ROM | `grom.bin` | `0cd5946c6473e42e8e4c2137785e427f` |
 
 * BIOS filenames are case-sensitive
+
+### Overlay Setup
+1. Create folder: `<RetroArch>/system/freeintvds-overlays/`
+2. Add controller overlay images (PNG or JPG) named to match your ROM files
+3. Optional: Add `default.jpg` as fallback for games without specific overlays
+
+**See [OVERLAY_SETUP.md](OVERLAY_SETUP.md) for detailed instructions.**
+
+## License
+FreeIntvDS is licensed under GPLv2+. Based on FreeIntv by David Richardson.
 
 ## Entertainment Computer System
 FreeIntv does not currently support Entertainment Computer System (ECS) functionality. Contributions to the code are welcome!
