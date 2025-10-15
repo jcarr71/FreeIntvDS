@@ -1,12 +1,12 @@
 # Software Information
 display_name = "Mattel - Intellivision (FreeIntvDS)"
-authors = "David Richardson"
+authors = "David Richardson, Jason Carr"
 supported_extensions = "int|bin|rom"
 corename = "FreeIntvDS"
 categories = "Emulator"
 license = "GPLv3"
 permissions = ""
-display_version = "2024.10.14"
+display_version = "2025.10.14"
 
 # Hardware Information
 manufacturer = "Mattel"
@@ -27,4 +27,4 @@ firmware1_path = "grom.bin"
 firmware1_opt = "false"
 notes = "(!) exec.bin (md5): 62e761035cb657903761800f4437b8af|(!) grom.bin (md5): 0cd5946c6473e42e8e4c2137785e427f"
 
-description = "A libretro emulation core for the Mattel Intellivision with dual-screen support. Features the main game display on the left and a secondary overlay screen on the right for numeric pad overlays. Per-game overlays can be placed in an 'overlays' subfolder with PNG files matching the No-Intro ROM filename."
+description = "A libretro emulation core for the Mattel Intellivision with dual-screen support. Features the main game display on the left/top and a secondary overlay screen on the right/bottom for numeric pad overlays. Per-game overlays can be placed in a 'freeintvds-overlays' subfolder under RetroArch system directory with JPG files matching the No-Intro ROM filename."

@@ -1,3 +1,19 @@
 *.o
 *.dylib
 
+# AI conversation and development notes
+CONVERSATION.md
+CURRENT_STATUS.md
+
+# Debug and test files
+debug_overlay_paths.c
+test_overlay_paths.c
+freeintvds_debug.txt
+*.log
+
+# Build artifacts
+*.dll
+*.so
+*.a
+freeintvds_libretro.*
+freeintv_libretro.*
