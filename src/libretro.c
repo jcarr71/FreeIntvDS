@@ -53,6 +53,112 @@ static char system_dir[512] = {0};  // RetroArch system directory
 static unsigned int* overlay_buffer = NULL;
 static int overlay_loaded = 0;
 
+// Controller base image system
+static unsigned int* controller_base = NULL;  // Static controller image with transparent windows
+static int controller_base_loaded = 0;
+
+// Button window definitions (where game overlay shows through controller image)
+typedef struct {
+    int x, y, width, height;  // Rectangle defining transparent window area
+} ButtonWindow;
+
+// Define 12 button windows matching physical Intellivision controller layout
+// These coordinates should match your controller photo after cropping
+static ButtonWindow button_windows[] = {
+    // Row 1: 1, 2, 3
+    {20, 20, 65, 45},
+    {95, 20, 65, 45},
+    {170, 20, 65, 45},
+    
+    // Row 2: 4, 5, 6
+    {20, 70, 65, 45},
+    {95, 70, 65, 45},
+    {170, 70, 65, 45},
+    
+    // Row 3: 7, 8, 9
+    {20, 120, 65, 45},
+    {95, 120, 65, 45},
+    {170, 120, 65, 45},
+    
+    // Row 4: Clear, 0, Enter
+    {20, 170, 65, 45},
+    {95, 170, 65, 45},
+    {170, 170, 65, 45}
+};
+
+// Load the static controller base image (called once at startup)
+static void load_controller_base(void)
+{
+    if (controller_base_loaded || !system_dir[0]) {
+        return;
+    }
+    
+    // Try to load controller_base.png from system directory
+    char base_path[512];
+    snprintf(base_path, sizeof(base_path), "%s/controller_base.png", system_dir);
+    
+    int width, height, channels;
+    unsigned char* img_data = stbi_load(base_path, &width, &height, &channels, 4);
+    
+    if (img_data) {
+        printf("[CONTROLLER] Loaded controller base image: %dx%d from %s\n", width, height, base_path);
+        
+        // Allocate controller base buffer
+        if (!controller_base) {
+            controller_base = (unsigned int*)malloc(OVERLAY_WIDTH * GAME_HEIGHT * sizeof(unsigned int));
+        }
+        
+        if (controller_base) {
+            // Scale controller base to fit 256x224 overlay area
+            float scale_x = (float)OVERLAY_WIDTH / (float)width;
+            float scale_y = (float)GAME_HEIGHT / (float)height;
+            float scale = (scale_x < scale_y) ? scale_x : scale_y;
+            
+            int scaled_width = (int)(width * scale);
+            int scaled_height = (int)(height * scale);
+            int x_offset = (OVERLAY_WIDTH - scaled_width) / 2;
+            int y_offset = (GAME_HEIGHT - scaled_height) / 2;
+            
+            // Clear to transparent black
+            for (int i = 0; i < OVERLAY_WIDTH * GAME_HEIGHT; i++) {
+                controller_base[i] = 0x00000000;  // Fully transparent
+            }
+            
+            // Scale and copy controller base image
+            for (int dst_y = 0; dst_y < scaled_height; dst_y++) {
+                for (int dst_x = 0; dst_x < scaled_width; dst_x++) {
+                    float src_x_f = ((float)dst_x + 0.5f) / scale - 0.5f;
+                    float src_y_f = ((float)dst_y + 0.5f) / scale - 0.5f;
+                    
+                    int src_x = (int)src_x_f;
+                    int src_y = (int)src_y_f;
+                    
+                    if (src_x >= 0 && src_x < width && src_y >= 0 && src_y < height) {
+                        unsigned char* pixel = img_data + (src_y * width + src_x) * 4;
+                        int out_x = dst_x + x_offset;
+                        int out_y = dst_y + y_offset;
+                        
+                        if (out_x >= 0 && out_x < OVERLAY_WIDTH && out_y >= 0 && out_y < GAME_HEIGHT) {
+                            // Store as ARGB with original alpha channel
+                            unsigned int alpha = pixel[3];
+                            unsigned int r = pixel[0];
+                            unsigned int g = pixel[1];
+                            unsigned int b = pixel[2];
+                            controller_base[out_y * OVERLAY_WIDTH + out_x] = 
+                                (alpha << 24) | (b << 16) | (g << 8) | r;
+                        }
+                    }
+                }
+            }
+            
+            controller_base_loaded = 1;
+            stbi_image_free(img_data);
+        }
+    } else {
+        printf("[CONTROLLER] No controller base image found at %s, will use default\n", base_path);
+    }
+}
+
 // Extract ROM name and build overlay path - handle ZIP extraction
 static void build_overlay_path(const char* rom_path, char* overlay_path, size_t overlay_path_size)
 {
@@ -234,6 +340,9 @@ static void load_overlay_for_rom(const char* rom_path)
     }
 }
 
+// Forward declarations for button label rendering
+static void render_button_labels(unsigned int* buffer, int buf_width);
+
 // Safe dual-screen function using proven patterns
 static void render_dual_screen(void)
 {
@@ -274,6 +383,61 @@ static void render_dual_screen(void)
                 
                 dual_buffer[y * DUAL_WIDTH + dual_x] = overlay_pixel;
             }
+        }
+        
+        // Layer-based overlay rendering system
+        // Layer 1: Game-specific button overlay (shows through transparent windows)
+        // Layer 2: Static controller base image with transparent button windows
+        // Layer 3: Button labels for clarity
+        
+        if (overlay_loaded && overlay_buffer) {
+            // Step 1: Copy game overlay to dual buffer overlay section
+            for (int y = 0; y < GAME_HEIGHT; y++) {
+                unsigned int* overlay_row = &dual_buffer[y * DUAL_WIDTH + GAME_WIDTH];
+                memcpy(overlay_row, &overlay_buffer[y * OVERLAY_WIDTH], OVERLAY_WIDTH * sizeof(unsigned int));
+            }
+            
+            // Step 2: Composite controller base on top (with alpha blending for button windows)
+            if (controller_base_loaded && controller_base) {
+                for (int y = 0; y < GAME_HEIGHT; y++) {
+                    for (int x = 0; x < OVERLAY_WIDTH; x++) {
+                        unsigned int base_pixel = controller_base[y * OVERLAY_WIDTH + x];
+                        unsigned int alpha = (base_pixel >> 24) & 0xFF;
+                        
+                        // If controller base is opaque or semi-transparent, blend it
+                        if (alpha > 0) {
+                            int dst_idx = y * DUAL_WIDTH + GAME_WIDTH + x;
+                            unsigned int overlay_pixel = dual_buffer[dst_idx];
+                            
+                            if (alpha == 0xFF) {
+                                // Fully opaque - replace completely
+                                dual_buffer[dst_idx] = base_pixel | 0xFF000000;
+                            } else {
+                                // Alpha blend: composite controller over game overlay
+                                unsigned int br = (base_pixel >> 16) & 0xFF;
+                                unsigned int bg = (base_pixel >> 8) & 0xFF;
+                                unsigned int bb = base_pixel & 0xFF;
+                                
+                                unsigned int or = (overlay_pixel >> 16) & 0xFF;
+                                unsigned int og = (overlay_pixel >> 8) & 0xFF;
+                                unsigned int ob = overlay_pixel & 0xFF;
+                                
+                                // Alpha blending formula
+                                unsigned int fr = (br * alpha + or * (255 - alpha)) / 255;
+                                unsigned int fg = (bg * alpha + og * (255 - alpha)) / 255;
+                                unsigned int fb = (bb * alpha + ob * (255 - alpha)) / 255;
+                                
+                                dual_buffer[dst_idx] = 0xFF000000 | (fr << 16) | (fg << 8) | fb;
+                            }
+                        }
+                        // If alpha == 0 (transparent), leave game overlay visible (button window)
+                    }
+                }
+            }
+            
+            // Step 3: Render button labels on top for clarity
+            unsigned int* overlay_section = dual_buffer + GAME_WIDTH;
+            render_button_labels(overlay_section, DUAL_WIDTH);
         }
     }
     
@@ -457,6 +621,9 @@ void retro_init(void)
 	if (SystemPath) {
 		strncpy(system_dir, SystemPath, sizeof(system_dir) - 1);
 		system_dir[sizeof(system_dir) - 1] = '\0';
+		
+		// Load static controller base image once at startup
+		load_controller_base();
 	}
 
 	// load exec
@@ -487,6 +654,193 @@ bool retro_load_game(const struct retro_game_info *info)
 void retro_unload_game(void)
 {
 	quit(0);
+}
+
+// Button label rendering for overlay
+// Intellivision keypad layout: 1 2 3 / 4 5 6 / 7 8 9 / C 0 E
+typedef struct {
+    int x, y, width, height;
+    const char* label;
+    unsigned int button_id;  // For future input mapping
+} ButtonDef;
+
+// Define 12-button Intellivision keypad layout (256x224 overlay area)
+static ButtonDef intellivision_buttons[] = {
+    // Row 1: 1, 2, 3
+    {20, 20, 65, 45, "1", 0},
+    {95, 20, 65, 45, "2", 0},
+    {170, 20, 65, 45, "3", 0},
+    
+    // Row 2: 4, 5, 6
+    {20, 70, 65, 45, "4", 0},
+    {95, 70, 65, 45, "5", 0},
+    {170, 70, 65, 45, "6", 0},
+    
+    // Row 3: 7, 8, 9
+    {20, 120, 65, 45, "7", 0},
+    {95, 120, 65, 45, "8", 0},
+    {170, 120, 65, 45, "9", 0},
+    
+    // Row 4: Clear, 0, Enter
+    {20, 170, 65, 45, "CLR", 0},
+    {95, 170, 65, 45, "0", 0},
+    {170, 170, 65, 45, "ENT", 0}
+};
+
+// Simple 5x7 bitmap font for digits and letters (minimal set)
+static const unsigned char font_5x7[][7] = {
+    // '0'
+    {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E},
+    // '1'
+    {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E},
+    // '2'
+    {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F},
+    // '3'
+    {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E},
+    // '4'
+    {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02},
+    // '5'
+    {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E},
+    // '6'
+    {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E},
+    // '7'
+    {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08},
+    // '8'
+    {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E},
+    // '9'
+    {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C},
+    // 'C'
+    {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E},
+    // 'L'
+    {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F},
+    // 'R'
+    {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11},
+    // 'E'
+    {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F},
+    // 'N'
+    {0x11, 0x19, 0x19, 0x15, 0x13, 0x13, 0x11},
+    // 'T'
+    {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}
+};
+
+// Draw a single character at position (scale 2x)
+static void draw_char(unsigned int* buffer, int buf_width, int x, int y, char c, unsigned int color)
+{
+    int char_index = -1;
+    
+    // Map character to font index
+    if (c >= '0' && c <= '9') {
+        char_index = c - '0';
+    } else if (c == 'C') {
+        char_index = 10;
+    } else if (c == 'L') {
+        char_index = 11;
+    } else if (c == 'R') {
+        char_index = 12;
+    } else if (c == 'E') {
+        char_index = 13;
+    } else if (c == 'N') {
+        char_index = 14;
+    } else if (c == 'T') {
+        char_index = 15;
+    } else {
+        return;  // Unsupported character
+    }
+    
+    // Draw 5x7 character scaled 2x (10x14 pixels)
+    for (int row = 0; row < 7; row++) {
+        unsigned char line = font_5x7[char_index][row];
+        for (int col = 0; col < 5; col++) {
+            if (line & (1 << (4 - col))) {
+                // Draw 2x2 pixel block
+                for (int dy = 0; dy < 2; dy++) {
+                    for (int dx = 0; dx < 2; dx++) {
+                        int px = x + col * 2 + dx;
+                        int py = y + row * 2 + dy;
+                        if (px >= 0 && px < buf_width && py >= 0 && py < GAME_HEIGHT) {
+                            buffer[py * buf_width + px] = color;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Draw text string centered in button
+static void draw_text_centered(unsigned int* buffer, int buf_width, int center_x, int center_y, 
+                               const char* text, unsigned int color)
+{
+    int len = strlen(text);
+    int char_width = 10;  // 5 pixels * 2 scale
+    int char_spacing = 2;
+    int total_width = len * char_width + (len - 1) * char_spacing;
+    int start_x = center_x - total_width / 2;
+    int start_y = center_y - 7;  // 7 rows * 2 scale / 2
+    
+    for (int i = 0; i < len; i++) {
+        draw_char(buffer, buf_width, start_x + i * (char_width + char_spacing), start_y, text[i], color);
+    }
+}
+
+// Draw button outline (semi-transparent border)
+static void draw_button_outline(unsigned int* buffer, int buf_width, int x, int y, int width, int height, 
+                                unsigned int color, int thickness)
+{
+    // Top and bottom borders
+    for (int dx = 0; dx < width; dx++) {
+        for (int t = 0; t < thickness; t++) {
+            int px = x + dx;
+            // Top border
+            if (px >= 0 && px < buf_width && (y + t) >= 0 && (y + t) < GAME_HEIGHT) {
+                buffer[(y + t) * buf_width + px] = color;
+            }
+            // Bottom border
+            if (px >= 0 && px < buf_width && (y + height - 1 - t) >= 0 && (y + height - 1 - t) < GAME_HEIGHT) {
+                buffer[(y + height - 1 - t) * buf_width + px] = color;
+            }
+        }
+    }
+    
+    // Left and right borders
+    for (int dy = 0; dy < height; dy++) {
+        for (int t = 0; t < thickness; t++) {
+            int py = y + dy;
+            // Left border
+            if ((x + t) >= 0 && (x + t) < buf_width && py >= 0 && py < GAME_HEIGHT) {
+                buffer[py * buf_width + (x + t)] = color;
+            }
+            // Right border
+            if ((x + width - 1 - t) >= 0 && (x + width - 1 - t) < buf_width && py >= 0 && py < GAME_HEIGHT) {
+                buffer[py * buf_width + (x + width - 1 - t)] = color;
+            }
+        }
+    }
+}
+
+// Render all button labels on overlay
+static void render_button_labels(unsigned int* buffer, int buf_width)
+{
+    int num_buttons = sizeof(intellivision_buttons) / sizeof(ButtonDef);
+    
+    // Semi-transparent white for outlines (70% opacity)
+    unsigned int outline_color = 0xB3FFFFFF;
+    
+    // Solid white for text
+    unsigned int text_color = 0xFFFFFFFF;
+    
+    for (int i = 0; i < num_buttons; i++) {
+        ButtonDef* btn = &intellivision_buttons[i];
+        
+        // Draw button outline
+        draw_button_outline(buffer, buf_width, btn->x, btn->y, btn->width, btn->height, 
+                          outline_color, 2);
+        
+        // Draw button label centered
+        int center_x = btn->x + btn->width / 2;
+        int center_y = btn->y + btn->height / 2;
+        draw_text_centered(buffer, buf_width, center_x, center_y, btn->label, text_color);
+    }
 }
 
 void retro_run(void)
@@ -754,6 +1108,11 @@ void retro_deinit(void)
 	if (overlay_buffer) {
 		free(overlay_buffer);
 		overlay_buffer = NULL;
+	}
+	
+	if (controller_base) {
+		free(controller_base);
+		controller_base = NULL;
 	}
 	
 	quit(0);
