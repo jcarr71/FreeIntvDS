@@ -1,0 +1,50 @@
+    // --- CONTROLLER OVERLAY (Bottom: 704x620, layered) ---
+    // Layer 1: Game-specific overlay (centered horizontally, top-aligned vertically)
+    // Layer 2: Static controller base (right side, 256 pixels wide)
+    
+    int controller_base_width = 256;  // Width reserved for controller on right
+    int game_overlay_width = 256;     // Width of game overlay (to be centered)
+    int game_overlay_x_offset = (WORKSPACE_WIDTH - controller_base_width - game_overlay_width) / 2;  // Center on left portion
+    
+    for (int y = 0; y < OVERLAY_HEIGHT; ++y) {
+        for (int x = 0; x < WORKSPACE_WIDTH; ++x) {
+            unsigned int pixel = 0xFF000000; // Default black
+            
+            // Determine if this pixel should show game overlay or controller base
+            int game_overlay_x_start = game_overlay_x_offset;
+            int game_overlay_x_end = game_overlay_x_offset + game_overlay_width;
+            int controller_base_x_start = WORKSPACE_WIDTH - controller_base_width;
+            
+            if (x >= game_overlay_x_start && x < game_overlay_x_end && y < overlay_height) {
+                // Game overlay region: centered horizontally, top-aligned vertically
+                int overlay_x = x - game_overlay_x_start;  // 0-255
+                int overlay_y = y;  // Top-aligned, no vertical offset
+                
+                // Map to source overlay pixels
+                int src_x = (int)((float)overlay_x * overlay_width / (float)game_overlay_width);
+                int src_y = overlay_y;  // 1:1 mapping vertically (top-aligned)
+                
+                if (overlay_valid && src_y < overlay_height && src_x < overlay_width) {
+                    pixel = overlay_buffer[src_y * overlay_width + src_x];
+                }
+            } else if (x >= controller_base_x_start) {
+                // Controller base region: right side
+                int ctrl_x = x - controller_base_x_start;  // 0-255
+                if (controller_base_loaded && controller_base) {
+                    // Scale controller base to fit 256x620 region
+                    int base_y = (int)((float)y * overlay_height / (float)OVERLAY_HEIGHT);
+                    int base_x = (int)((float)ctrl_x * overlay_width / (float)controller_base_width);
+                    if (base_y < overlay_height && base_x < overlay_width) {
+                        unsigned int base_pixel = controller_base[base_y * overlay_width + base_x];
+                        // If controller base has transparency, layer it over background
+                        unsigned int alpha = (base_pixel >> 24) & 0xFF;
+                        if (alpha > 0) {
+                            pixel = base_pixel;
+                        }
+                    }
+                }
+            }
+            
+            dual_buffer[(GAME_SCREEN_HEIGHT + y) * WORKSPACE_WIDTH + x] = pixel;
+        }
+    }

@@ -1,53 +1,92 @@
 # FreeIntvDS - Current Status
-**Last Updated**: October 15, 2025
+**Last Updated**: October 17, 2025
 
 ## ✅ Completed Features
 
-### Dual-Screen Display
-- **Resolution**: 608x224 (352x224 game + 256x224 overlay)
-- **Rendering**: Side-by-side composite in single framebuffer
-- **Performance**: Efficient single-pass rendering
+### Dual-Screen Display (Vertical Layout for Ayn Thor)
+- **Total Resolution**: 704x1068 pixels
+- **Game Screen**: 704x448 (top section, 2x scaled from 352x224)
+- **Overlay Region**: 704x620 (bottom section, layered)
+- **Rendering**: Vertical stacked layout in single framebuffer
+- **Performance**: Efficient single-pass rendering with 1:1 pixel mapping
 - **Toggle**: Core option to enable/disable dual-screen mode
 
-### Overlay System
+### Layered Overlay System
+- **Controller Base**: 446x620 pixels, right-aligned static template
+- **Game Overlay**: 370x600 pixels, centered under controller base
 - **Location**: `<RetroArch>/system/freeintvds-overlays/`
-- **Format support**: PNG and JPG
-- **Naming**: Matches ROM filename (without extension)
-- **Fallback**: `default.png` or `default.jpg` for games without specific overlays
+- **Format support**: PNG with alpha transparency (JPG fallback)
+- **Naming**: 
+  - Controller base: `controller_base.png`
+  - Game overlays: `[ROM_NAME].png`
+- **Fallback**: `default.png` for both controller base and game overlays
 - **ZIP support**: Works with archived ROMs (uses original ZIP name)
+- **Layering**: Game overlay renders underneath controller base with alpha blending
 
 ### Image Processing
-- **Scaling**: Bilinear interpolation for smooth rendering
-- **Aspect ratio**: Preserved during scaling
-- **Centering**: Automatic centering in 256x224 display area
-- **Color conversion**: RGBA (PNG/JPG) → BGR (STIC format)
+- **Scaling**: None - all images use 1:1 pixel mapping (native resolution)
+- **Aspect ratio**: Perfectly preserved (no stretching or distortion)
+- **Centering**: Game overlay automatically centered within 446px controller base
+- **Alignment**: 
+  - Game overlay: Top-aligned, horizontally centered
+  - Controller base: Top-aligned, right-aligned to screen edge
+- **Color format**: ARGB with full alpha channel support
+- **Transparency**: Alpha blending allows overlay to show through controller base
 
 ### Build System
 - **Windows**: MinGW-w64 (`mingw32-make`)
 - **Core identification**: "FreeIntvDS" when `FREEINTV_DS` defined
 - **Clean compilation**: No errors, minimal warnings
+- **Output**: `freeintvds_libretro.dll`
 
 ## 🔄 Working Implementation Details
+
+### Display Layout
+```
+┌─────────────────────────────────┐
+│    Game Screen (704x448)        │  ← 2x scaled, centered
+│    2x pixel doubling            │
+├─────────────────────────────────┤
+│ [258px black] [446px overlay]   │  ← Controller region
+│               ┌───────────┐     │
+│               │ Ctrl Base │     │  ← 446x620, right-aligned
+│               │ 446x620   │     │
+│               │  ┌─────┐  │     │
+│               │  │ Ovr │  │     │  ← Game overlay 370x600
+│               │  │370x │  │     │     centered, underneath
+│               │  │600  │  │     │
+│               │  └─────┘  │     │
+│               └───────────┘     │
+└─────────────────────────────────┘
+  Total: 704x1068 pixels
+```
 
 ### Path Detection
 - Stores RetroArch system directory at init
 - Builds overlay paths relative to system dir
 - Handles temp extraction (RetroArch unzips to temp)
 - Filename matching works across platforms
+- Separate loading for controller base and game overlays
 
 ### Rendering Pipeline
-1. Game frame rendered by STIC (352x224, BGR format)
-2. Overlay loaded and cached in memory (256x224, BGR format)
-3. Composite buffer created (608x224)
-4. Game copied to left side (0-351)
-5. Overlay copied to right side (352-607)
-6. Single texture sent to RetroArch frontend
+1. **Game frame** rendered by STIC (352x224, BGR format)
+2. **2x upscaling** to 704x448 using pixel doubling
+3. **Game copied** to top section (0-447 vertical)
+4. **Controller base** loaded at 446x620 native resolution
+5. **Game overlay** loaded at 370x600 native resolution
+6. **Layer compositing**:
+   - Black background (left 258 pixels)
+   - Game overlay rendered (centered, back layer)
+   - Controller base rendered on top (front layer, with alpha)
+7. **Single texture** (704x1068) sent to RetroArch frontend
 
 ### Memory Management
-- Overlay buffer: Allocated once, reused
-- Dual-screen buffer: Allocated once, reused
-- Image data: Freed immediately after scaling
-- Clean shutdown: All buffers freed in `retro_deinit()`
+- **Controller base buffer**: Allocated at actual image dimensions (446x620)
+- **Overlay buffer**: Allocated at actual image dimensions (370x600)
+- **Dual-screen buffer**: Allocated once at 704x1068, reused
+- **Image data**: Freed immediately after loading
+- **Clean shutdown**: All buffers freed in `retro_deinit()`
+- **Dynamic reallocation**: Buffers freed and reallocated if ROM changes
 
 ## 📋 Testing Status
 

@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <assert.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -38,53 +39,31 @@
 #include "controller.h"
 #include "osd.h"
 
+// Workspace: game screen doubled (704x448) + overlay (704x620)
+#define WORKSPACE_WIDTH 704
+#define WORKSPACE_HEIGHT 1068  // 448 + 620
+#define GAME_SCREEN_HEIGHT 448  // Doubled from 224
+#define OVERLAY_HEIGHT 620  // Match controller base height
+
 // DUAL-SCREEN IMPLEMENTATION
 static int dual_screen_enabled = 1;
 static void* dual_screen_buffer = NULL;
 static const int GAME_WIDTH = 352;
 static const int GAME_HEIGHT = 224;
-static const int OVERLAY_WIDTH = 256;
-static const int DUAL_WIDTH = 608;   // 352 + 256
-static const int DUAL_HEIGHT = 224;
 
 // PNG overlay system
 static char current_rom_path[512] = {0};
 static char system_dir[512] = {0};  // RetroArch system directory
 static unsigned int* overlay_buffer = NULL;
 static int overlay_loaded = 0;
+static int overlay_width = 370;   // Actual overlay width
+static int overlay_height = 600;  // Actual overlay height
 
 // Controller base image system
 static unsigned int* controller_base = NULL;  // Static controller image with transparent windows
 static int controller_base_loaded = 0;
-
-// Button window definitions (where game overlay shows through controller image)
-typedef struct {
-    int x, y, width, height;  // Rectangle defining transparent window area
-} ButtonWindow;
-
-// Define 12 button windows matching physical Intellivision controller layout
-// These coordinates should match your controller photo after cropping
-static ButtonWindow button_windows[] = {
-    // Row 1: 1, 2, 3
-    {20, 20, 65, 45},
-    {95, 20, 65, 45},
-    {170, 20, 65, 45},
-    
-    // Row 2: 4, 5, 6
-    {20, 70, 65, 45},
-    {95, 70, 65, 45},
-    {170, 70, 65, 45},
-    
-    // Row 3: 7, 8, 9
-    {20, 120, 65, 45},
-    {95, 120, 65, 45},
-    {170, 120, 65, 45},
-    
-    // Row 4: Clear, 0, Enter
-    {20, 170, 65, 45},
-    {95, 170, 65, 45},
-    {170, 170, 65, 45}
-};
+static int controller_base_width = 446;   // Controller base actual width
+static int controller_base_height = 620;  // Controller base actual height (full overlay region)
 
 // Load the static controller base image (called once at startup)
 static void load_controller_base(void)
@@ -93,66 +72,50 @@ static void load_controller_base(void)
         return;
     }
     
-    // Try to load controller_base.png from system directory
+    // Try to load controller_base.png from system/freeintvds-overlays/
     char base_path[512];
-    snprintf(base_path, sizeof(base_path), "%s/controller_base.png", system_dir);
+    snprintf(base_path, sizeof(base_path), "%s\\freeintvds-overlays\\controller_base.png", system_dir);
     
     int width, height, channels;
     unsigned char* img_data = stbi_load(base_path, &width, &height, &channels, 4);
     
+    // If controller_base.png not found, try default.png
+    if (!img_data) {
+        snprintf(base_path, sizeof(base_path), "%s\\freeintvds-overlays\\default.png", system_dir);
+        img_data = stbi_load(base_path, &width, &height, &channels, 4);
+    }
+    
     if (img_data) {
         printf("[CONTROLLER] Loaded controller base image: %dx%d from %s\n", width, height, base_path);
         
-        // Allocate controller base buffer
+        // Store actual dimensions
+        controller_base_width = width;
+        controller_base_height = height;
+        
+        // Allocate controller base buffer at native size
         if (!controller_base) {
-            controller_base = (unsigned int*)malloc(OVERLAY_WIDTH * GAME_HEIGHT * sizeof(unsigned int));
+            controller_base = (unsigned int*)malloc(width * height * sizeof(unsigned int));
         }
         
         if (controller_base) {
-            // Scale controller base to fit 256x224 overlay area
-            float scale_x = (float)OVERLAY_WIDTH / (float)width;
-            float scale_y = (float)GAME_HEIGHT / (float)height;
-            float scale = (scale_x < scale_y) ? scale_x : scale_y;
-            
-            int scaled_width = (int)(width * scale);
-            int scaled_height = (int)(height * scale);
-            int x_offset = (OVERLAY_WIDTH - scaled_width) / 2;
-            int y_offset = (GAME_HEIGHT - scaled_height) / 2;
-            
-            // Clear to transparent black
-            for (int i = 0; i < OVERLAY_WIDTH * GAME_HEIGHT; i++) {
-                controller_base[i] = 0x00000000;  // Fully transparent
-            }
-            
-            // Scale and copy controller base image
-            for (int dst_y = 0; dst_y < scaled_height; dst_y++) {
-                for (int dst_x = 0; dst_x < scaled_width; dst_x++) {
-                    float src_x_f = ((float)dst_x + 0.5f) / scale - 0.5f;
-                    float src_y_f = ((float)dst_y + 0.5f) / scale - 0.5f;
+            // Copy controller base at native resolution (no scaling)
+            for (int y = 0; y < height; y++) {
+                for (int x = 0; x < width; x++) {
+                    unsigned char* pixel = img_data + (y * width + x) * 4;
                     
-                    int src_x = (int)src_x_f;
-                    int src_y = (int)src_y_f;
-                    
-                    if (src_x >= 0 && src_x < width && src_y >= 0 && src_y < height) {
-                        unsigned char* pixel = img_data + (src_y * width + src_x) * 4;
-                        int out_x = dst_x + x_offset;
-                        int out_y = dst_y + y_offset;
-                        
-                        if (out_x >= 0 && out_x < OVERLAY_WIDTH && out_y >= 0 && out_y < GAME_HEIGHT) {
-                            // Store as ARGB with original alpha channel
-                            unsigned int alpha = pixel[3];
-                            unsigned int r = pixel[0];
-                            unsigned int g = pixel[1];
-                            unsigned int b = pixel[2];
-                            controller_base[out_y * OVERLAY_WIDTH + out_x] = 
-                                (alpha << 24) | (b << 16) | (g << 8) | r;
-                        }
-                    }
+                    // Store as ARGB with original alpha channel
+                    unsigned int alpha = pixel[3];
+                    unsigned int r = pixel[0];
+                    unsigned int g = pixel[1];
+                    unsigned int b = pixel[2];
+                    controller_base[y * width + x] = 
+                        (alpha << 24) | (b << 16) | (g << 8) | r;
                 }
             }
             
             controller_base_loaded = 1;
             stbi_image_free(img_data);
+            printf("[CONTROLLER] Controller base stored at native %dx%d resolution\n", controller_base_width, controller_base_height);
         }
     } else {
         printf("[CONTROLLER] No controller base image found at %s, will use default\n", base_path);
@@ -207,237 +170,177 @@ static void load_overlay_for_rom(const char* rom_path)
     // Reset overlay state
     overlay_loaded = 0;
     
-    // Allocate overlay buffer if needed
-    if (!overlay_buffer) {
-        overlay_buffer = (unsigned int*)malloc(OVERLAY_WIDTH * GAME_HEIGHT * sizeof(unsigned int));
+    // Free existing overlay buffer if dimensions might change
+    if (overlay_buffer) {
+        free(overlay_buffer);
+        overlay_buffer = NULL;
+    }
+    
+    int width, height, channels;
+    unsigned char* img_data = NULL;
+    
+    // Try PNG first
+    img_data = stbi_load(overlay_path, &width, &height, &channels, 4);
+    
+    // If PNG not found, try JPG
+    if (!img_data) {
+        char jpg_path[1024];
+        strncpy(jpg_path, overlay_path, sizeof(jpg_path) - 1);
+        jpg_path[sizeof(jpg_path) - 1] = '\0';
+        
+        char* ext = strrchr(jpg_path, '.');
+        if (ext && strcmp(ext, ".png") == 0) {
+            strcpy(ext, ".jpg");
+            img_data = stbi_load(jpg_path, &width, &height, &channels, 4);
+        }
+    }
+    
+    // If still not found, try default.png fallback
+    if (!img_data && system_dir[0] != '\0') {
+        char default_path[1024];
+        snprintf(default_path, sizeof(default_path), 
+                 "%s\\freeintvds-overlays\\default.png", system_dir);
+        img_data = stbi_load(default_path, &width, &height, &channels, 4);
+        
+        // Try default.jpg if PNG not found
+        if (!img_data) {
+            snprintf(default_path, sizeof(default_path), 
+                     "%s\\freeintvds-overlays\\default.jpg", system_dir);
+            img_data = stbi_load(default_path, &width, &height, &channels, 4);
+        }
+    }
+    
+    if (img_data) {
+        printf("[OVERLAY] Loaded overlay image: %dx%d from %s\n", width, height, overlay_path);
+        
+        // Store actual dimensions
+        overlay_width = width;
+        overlay_height = height;
+        
+        // Allocate overlay buffer at native size
+        overlay_buffer = (unsigned int*)malloc(width * height * sizeof(unsigned int));
+        
         if (overlay_buffer) {
-            for (int i = 0; i < OVERLAY_WIDTH * GAME_HEIGHT; i++) {
-                overlay_buffer[i] = 0xFF000000; // Black
+            // Copy overlay at native resolution (no scaling)
+            for (int y = 0; y < height; y++) {
+                for (int x = 0; x < width; x++) {
+                    unsigned char* pixel = img_data + (y * width + x) * 4;
+                    
+                    // Store as ARGB with original alpha channel
+                    unsigned int alpha = pixel[3];
+                    unsigned int r = pixel[0];
+                    unsigned int g = pixel[1];
+                    unsigned int b = pixel[2];
+                    overlay_buffer[y * width + x] = 
+                        (alpha << 24) | (b << 16) | (g << 8) | r;
+                }
+            }
+            
+            printf("[OVERLAY] Overlay stored at native %dx%d resolution\n", overlay_width, overlay_height);
+        }
+        
+        stbi_image_free(img_data);
+    } else {
+        // Fallback: allocate and create test pattern at default overlay size
+        overlay_width = 370;
+        overlay_height = 600;
+        overlay_buffer = (unsigned int*)malloc(overlay_width * overlay_height * sizeof(unsigned int));
+        
+        if (overlay_buffer) {
+            // 4-quadrant test pattern
+            for (int y = 0; y < overlay_height; y++) {
+                for (int x = 0; x < overlay_width; x++) {
+                    if (y < overlay_height / 2 && x < overlay_width / 2)
+                        overlay_buffer[y * overlay_width + x] = 0xFF0000FF; // Blue in BGR
+                    else if (y < overlay_height / 2)
+                        overlay_buffer[y * overlay_width + x] = 0xFF00FF00; // Green
+                    else if (x < overlay_width / 2)
+                        overlay_buffer[y * overlay_width + x] = 0xFFFF0000; // Red in BGR  
+                    else
+                        overlay_buffer[y * overlay_width + x] = 0xFFFFFFFF; // White
+                }
             }
         }
     }
     
-    if (overlay_buffer) {
-        int width, height, channels;
-        unsigned char* img_data = NULL;
-        
-        // Try PNG first
-        img_data = stbi_load(overlay_path, &width, &height, &channels, 4);
-        
-        // If PNG not found, try JPG
-        if (!img_data) {
-            char jpg_path[1024];
-            strncpy(jpg_path, overlay_path, sizeof(jpg_path) - 1);
-            jpg_path[sizeof(jpg_path) - 1] = '\0';
-            
-            char* ext = strrchr(jpg_path, '.');
-            if (ext && strcmp(ext, ".png") == 0) {
-                strcpy(ext, ".jpg");
-                img_data = stbi_load(jpg_path, &width, &height, &channels, 4);
-            }
-        }
-        
-        // If still not found, try default.png fallback
-        if (!img_data && system_dir[0] != '\0') {
-            char default_path[1024];
-            snprintf(default_path, sizeof(default_path), 
-                     "%s\\freeintvds-overlays\\default.png", system_dir);
-            img_data = stbi_load(default_path, &width, &height, &channels, 4);
-            
-            // Try default.jpg if PNG not found
-            if (!img_data) {
-                snprintf(default_path, sizeof(default_path), 
-                         "%s\\freeintvds-overlays\\default.jpg", system_dir);
-                img_data = stbi_load(default_path, &width, &height, &channels, 4);
-            }
-        }
-        
-        if (img_data) {
-            // Calculate scale to fit image into overlay area (maintain aspect ratio)
-            float scale_x = (float)OVERLAY_WIDTH / (float)width;
-            float scale_y = (float)GAME_HEIGHT / (float)height;
-            float scale = (scale_x < scale_y) ? scale_x : scale_y;
-            
-            int scaled_width = (int)(width * scale);
-            int scaled_height = (int)(height * scale);
-            int x_offset = (OVERLAY_WIDTH - scaled_width) / 2;
-            int y_offset = (GAME_HEIGHT - scaled_height) / 2;
-            
-            // Clear overlay buffer to black
-            for (int i = 0; i < OVERLAY_WIDTH * GAME_HEIGHT; i++) {
-                overlay_buffer[i] = 0xFF000000;
-            }
-            
-            // Scale and copy image with bilinear interpolation
-            for (int dst_y = 0; dst_y < scaled_height; dst_y++) {
-                for (int dst_x = 0; dst_x < scaled_width; dst_x++) {
-                    // Map destination pixel to source coordinates
-                    float src_x_f = ((float)dst_x + 0.5f) / scale - 0.5f;
-                    float src_y_f = ((float)dst_y + 0.5f) / scale - 0.5f;
-                    
-                    int src_x0 = (int)src_x_f;
-                    int src_y0 = (int)src_y_f;
-                    int src_x1 = src_x0 + 1;
-                    int src_y1 = src_y0 + 1;
-                    
-                    // Clamp to image bounds
-                    if (src_x0 < 0) src_x0 = 0;
-                    if (src_y0 < 0) src_y0 = 0;
-                    if (src_x1 >= width) src_x1 = width - 1;
-                    if (src_y1 >= height) src_y1 = height - 1;
-                    
-                    // Calculate interpolation weights
-                    float x_frac = src_x_f - (float)src_x0;
-                    float y_frac = src_y_f - (float)src_y0;
-                    
-                    if (x_frac < 0.0f) x_frac = 0.0f;
-                    if (y_frac < 0.0f) y_frac = 0.0f;
-                    
-                    // Sample four neighboring pixels
-                    unsigned char* p00 = img_data + (src_y0 * width + src_x0) * 4;
-                    unsigned char* p10 = img_data + (src_y0 * width + src_x1) * 4;
-                    unsigned char* p01 = img_data + (src_y1 * width + src_x0) * 4;
-                    unsigned char* p11 = img_data + (src_y1 * width + src_x1) * 4;
-                    
-                    // Bilinear interpolation for each channel
-                    float r = (p00[0] * (1.0f - x_frac) + p10[0] * x_frac) * (1.0f - y_frac) +
-                              (p01[0] * (1.0f - x_frac) + p11[0] * x_frac) * y_frac;
-                    float g = (p00[1] * (1.0f - x_frac) + p10[1] * x_frac) * (1.0f - y_frac) +
-                              (p01[1] * (1.0f - x_frac) + p11[1] * x_frac) * y_frac;
-                    float b = (p00[2] * (1.0f - x_frac) + p10[2] * x_frac) * (1.0f - y_frac) +
-                              (p01[2] * (1.0f - x_frac) + p11[2] * x_frac) * y_frac;
-                    
-                    int out_x = dst_x + x_offset;
-                    int out_y = dst_y + y_offset;
-                    
-                    if (out_x >= 0 && out_x < OVERLAY_WIDTH && out_y >= 0 && out_y < GAME_HEIGHT) {
-                        // Convert RGBA to BGR format (matching STIC pixel format)
-                        overlay_buffer[out_y * OVERLAY_WIDTH + out_x] = 
-                            0xFF000000 | ((int)b << 16) | ((int)g << 8) | (int)r;
-                    }
-                }
-            }
-            stbi_image_free(img_data);
-        } else {
-            // Fallback: test pattern
-            for (int y = 0; y < GAME_HEIGHT; y++) {
-                for (int x = 0; x < OVERLAY_WIDTH; x++) {
-                    // 4 quarters
-                    if (y < GAME_HEIGHT / 2 && x < OVERLAY_WIDTH / 2)
-                        overlay_buffer[y * OVERLAY_WIDTH + x] = 0xFF0000FF; // Blue in BGR
-                    else if (y < GAME_HEIGHT / 2)
-                        overlay_buffer[y * OVERLAY_WIDTH + x] = 0xFF00FF00; // Green
-                    else if (x < OVERLAY_WIDTH / 2)
-                        overlay_buffer[y * OVERLAY_WIDTH + x] = 0xFFFF0000; // Red in BGR  
-                    else
-                        overlay_buffer[y * OVERLAY_WIDTH + x] = 0xFFFFFFFF; // White
-                }
-            }
-        }
-        
-        overlay_loaded = 1;
-        strncpy(current_rom_path, rom_path, sizeof(current_rom_path) - 1);
-    }
+    overlay_loaded = 1;
+    strncpy(current_rom_path, rom_path, sizeof(current_rom_path) - 1);
 }
-
-// Forward declarations for button label rendering
-static void render_button_labels(unsigned int* buffer, int buf_width);
 
 // Safe dual-screen function using proven patterns
 static void render_dual_screen(void)
 {
     if (!dual_screen_enabled) return;
-    
-    // Allocate dual-screen buffer using proven safe malloc pattern
+    // Allocate workspace buffer
     if (!dual_screen_buffer) {
-        dual_screen_buffer = malloc(DUAL_WIDTH * DUAL_HEIGHT * sizeof(unsigned int));
+        dual_screen_buffer = malloc(WORKSPACE_WIDTH * WORKSPACE_HEIGHT * sizeof(unsigned int));
     }
+    if (!dual_screen_buffer) return;
+    unsigned int* dual_buffer = (unsigned int*)dual_screen_buffer;
+    // Defensive: check frame pointer
+    extern unsigned int frame[352 * 224];
+    int frame_valid = (frame != NULL);
+    int overlay_valid = (overlay_buffer != NULL);
+    // --- GAME SCREEN (Top: 704x448, scaled 2x from 352x224) ---
+    for (int y = 0; y < 448; ++y) {
+        int src_y = y / 2;  // Map to source row (0-223)
+        for (int x = 0; x < 704; ++x) {
+            int src_x = x / 2;  // Map to source column (0-351)
+            if (frame_valid && src_y < GAME_HEIGHT && src_x < GAME_WIDTH) {
+                dual_buffer[y * WORKSPACE_WIDTH + x] = frame[src_y * GAME_WIDTH + src_x];
+            } else {
+                dual_buffer[y * WORKSPACE_WIDTH + x] = 0xFF000000; // Black
+            }
+        }
+    }
+    // --- CONTROLLER OVERLAY (Bottom: 704x620, layered) ---
+    // Layer 1 (back): Game-specific overlay (centered under controller base, top-aligned, 1:1 pixels)
+    // Layer 2 (front): Static controller base (right-aligned, native resolution, 1:1 pixels)
     
-    if (dual_screen_buffer) {
-        unsigned int* dual_buffer = (unsigned int*)dual_screen_buffer;
-        extern unsigned int frame[352 * 224];
-        
-        // Copy game screen to left side of dual buffer (proven safe pattern)
-        for (int y = 0; y < GAME_HEIGHT; y++) {
-            for (int x = 0; x < GAME_WIDTH; x++) {
-                dual_buffer[y * DUAL_WIDTH + x] = frame[y * GAME_WIDTH + x];
-            }
-        }
-        
-        // Draw overlay on right side - use loaded overlay if available
-        for (int y = 0; y < DUAL_HEIGHT; y++) {
-            for (int x = 0; x < OVERLAY_WIDTH; x++) {
-                int dual_x = GAME_WIDTH + x;  // Right side starts at x=352
-                
-                unsigned int overlay_pixel;
-                if (overlay_loaded && overlay_buffer) {
-                    overlay_pixel = overlay_buffer[y * OVERLAY_WIDTH + x];
-                } else {
-                    // Fallback checkerboard pattern for visibility
-                    if ((x / 32 + y / 32) % 2 == 0) {
-                        overlay_pixel = 0xFF8000FF; // Purple
-                    } else {
-                        overlay_pixel = 0xFF404040; // Dark gray
-                    }
-                }
-                
-                dual_buffer[y * DUAL_WIDTH + dual_x] = overlay_pixel;
-            }
-        }
-        
-        // Layer-based overlay rendering system
-        // Layer 1: Game-specific button overlay (shows through transparent windows)
-        // Layer 2: Static controller base image with transparent button windows
-        // Layer 3: Button labels for clarity
-        
-        if (overlay_loaded && overlay_buffer) {
-            // Step 1: Copy game overlay to dual buffer overlay section
-            for (int y = 0; y < GAME_HEIGHT; y++) {
-                unsigned int* overlay_row = &dual_buffer[y * DUAL_WIDTH + GAME_WIDTH];
-                memcpy(overlay_row, &overlay_buffer[y * OVERLAY_WIDTH], OVERLAY_WIDTH * sizeof(unsigned int));
-            }
+    // Controller base aligns to right edge of workspace
+    int ctrl_base_x_start = WORKSPACE_WIDTH - controller_base_width;  // Right-aligned
+    
+    // Game overlay centered horizontally within controller base region
+    int game_overlay_x_offset = (controller_base_width - overlay_width) / 2;
+    
+    for (int y = 0; y < OVERLAY_HEIGHT; ++y) {
+        for (int x = 0; x < WORKSPACE_WIDTH; ++x) {
+            unsigned int pixel = 0xFF000000; // Default black
             
-            // Step 2: Composite controller base on top (with alpha blending for button windows)
-            if (controller_base_loaded && controller_base) {
-                for (int y = 0; y < GAME_HEIGHT; y++) {
-                    for (int x = 0; x < OVERLAY_WIDTH; x++) {
-                        unsigned int base_pixel = controller_base[y * OVERLAY_WIDTH + x];
-                        unsigned int alpha = (base_pixel >> 24) & 0xFF;
-                        
-                        // If controller base is opaque or semi-transparent, blend it
-                        if (alpha > 0) {
-                            int dst_idx = y * DUAL_WIDTH + GAME_WIDTH + x;
-                            unsigned int overlay_pixel = dual_buffer[dst_idx];
-                            
-                            if (alpha == 0xFF) {
-                                // Fully opaque - replace completely
-                                dual_buffer[dst_idx] = base_pixel | 0xFF000000;
-                            } else {
-                                // Alpha blend: composite controller over game overlay
-                                unsigned int br = (base_pixel >> 16) & 0xFF;
-                                unsigned int bg = (base_pixel >> 8) & 0xFF;
-                                unsigned int bb = base_pixel & 0xFF;
-                                
-                                unsigned int or = (overlay_pixel >> 16) & 0xFF;
-                                unsigned int og = (overlay_pixel >> 8) & 0xFF;
-                                unsigned int ob = overlay_pixel & 0xFF;
-                                
-                                // Alpha blending formula
-                                unsigned int fr = (br * alpha + or * (255 - alpha)) / 255;
-                                unsigned int fg = (bg * alpha + og * (255 - alpha)) / 255;
-                                unsigned int fb = (bb * alpha + ob * (255 - alpha)) / 255;
-                                
-                                dual_buffer[dst_idx] = 0xFF000000 | (fr << 16) | (fg << 8) | fb;
-                            }
+            if (x >= ctrl_base_x_start) {
+                // Controller base region: right side, aligned to right edge
+                int ctrl_x = x - ctrl_base_x_start;  // Position within controller base
+                
+                // First render game overlay underneath (back layer, centered, top-aligned, 1:1 pixels)
+                if (overlay_valid && y < overlay_height) {
+                    int overlay_x_in_region = ctrl_x - game_overlay_x_offset;
+                    
+                    // Check if we're within the game overlay bounds
+                    if (overlay_x_in_region >= 0 && overlay_x_in_region < overlay_width) {
+                        // Direct 1:1 pixel mapping (no scaling)
+                        unsigned int overlay_pixel = overlay_buffer[y * overlay_width + overlay_x_in_region];
+                        unsigned int overlay_alpha = (overlay_pixel >> 24) & 0xFF;
+                        // Render game overlay pixel
+                        if (overlay_alpha > 0) {
+                            pixel = overlay_pixel;
                         }
-                        // If alpha == 0 (transparent), leave game overlay visible (button window)
+                    }
+                }
+                
+                // Then layer controller base on top (front layer, 1:1 pixels)
+                if (controller_base_loaded && controller_base && y < controller_base_height && ctrl_x < controller_base_width) {
+                    // Direct 1:1 pixel mapping at native resolution
+                    unsigned int base_pixel = controller_base[y * controller_base_width + ctrl_x];
+                    unsigned int alpha = (base_pixel >> 24) & 0xFF;
+                    // Only draw controller base if not transparent (so game overlay shows through)
+                    if (alpha > 0) {
+                        pixel = base_pixel;
                     }
                 }
             }
+            // Left side remains black
             
-            // Step 3: Render button labels on top for clarity
-            unsigned int* overlay_section = dual_buffer + GAME_WIDTH;
-            render_button_labels(overlay_section, DUAL_WIDTH);
+            dual_buffer[(GAME_SCREEN_HEIGHT + y) * WORKSPACE_WIDTH + x] = pixel;
         }
     }
     
@@ -1042,12 +945,18 @@ void retro_run(void)
 	if (intv_halt)
 		OSD_drawTextBG(3, 5, "INTELLIVISION HALTED");
 	
-	// Update dual-screen buffer AFTER Run() updates the game frame
-	render_dual_screen();
-	
 	// Send frame to libretro - use dual-screen buffer if enabled
-	if (dual_screen_enabled && dual_screen_buffer) {
-		Video(dual_screen_buffer, DUAL_WIDTH, DUAL_HEIGHT, sizeof(unsigned int) * DUAL_WIDTH);
+	if (dual_screen_enabled) {
+		// Update dual-screen buffer AFTER Run() updates the game frame
+		render_dual_screen();
+		
+		// Only send dual buffer if it was successfully allocated
+		if (dual_screen_buffer) {
+			Video(dual_screen_buffer, WORKSPACE_WIDTH, WORKSPACE_HEIGHT, sizeof(unsigned int) * WORKSPACE_WIDTH);
+		} else {
+			// Fallback to regular single screen if allocation failed
+			Video(frame, frameWidth, frameHeight, sizeof(unsigned int) * frameWidth);
+		}
 	} else {
 		Video(frame, frameWidth, frameHeight, sizeof(unsigned int) * frameWidth);
 	}
@@ -1075,23 +984,19 @@ void retro_get_system_info(struct retro_system_info *info)
 
 void retro_get_system_av_info(struct retro_system_av_info *info)
 {
-	int pixelformat = RETRO_PIXEL_FORMAT_XRGB8888;
-
-	// Use dual-screen dimensions using proven safe pattern
-	int width = dual_screen_enabled ? DUAL_WIDTH : MaxWidth;
-	int height = dual_screen_enabled ? DUAL_HEIGHT : MaxHeight;
-
-	memset(info, 0, sizeof(*info));
-	info->geometry.base_width   = width;
-	info->geometry.base_height  = height;
-	info->geometry.max_width    = width;
-	info->geometry.max_height   = height;
-	info->geometry.aspect_ratio = ((float)width) / ((float)height);
-
-	info->timing.fps = DefaultFPS;
-	info->timing.sample_rate = AUDIO_FREQUENCY;
-
-	Environ(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &pixelformat);
+    int pixelformat = RETRO_PIXEL_FORMAT_XRGB8888;
+    int width = dual_screen_enabled ? WORKSPACE_WIDTH : GAME_WIDTH;
+    int height = dual_screen_enabled ? WORKSPACE_HEIGHT : GAME_HEIGHT;
+    memset(info, 0, sizeof(*info));
+    info->geometry.base_width   = width;
+    info->geometry.base_height  = height;
+    info->geometry.max_width    = width;
+    info->geometry.max_height   = height;
+    // Use actual workspace aspect ratio so frontend doesn't stretch
+    info->geometry.aspect_ratio = ((float)width) / ((float)height);
+    info->timing.fps = DefaultFPS;
+    info->timing.sample_rate = AUDIO_FREQUENCY;
+    Environ(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &pixelformat);
 }
 
 
