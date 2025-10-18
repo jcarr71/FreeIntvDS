@@ -1,43 +1,119 @@
-/*
-	This file is part of FreeIntv.
-
-	FreeIntv is free software; you can redistribute it and/or modify
-	it under the terms of the GNU General Public License as published by
-	the Free Software Foundation; either version 2 of the License, or
-	(at your option) any later version.
-
-	FreeIntv is distributed in the hope that it will be useful,
-	but WITHOUT ANY WARRANTY; without even the implied warranty of
-	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-	GNU General Public License for more details.
-
-	You should have received a copy of the GNU General Public License along
-	with FreeIntv; if not, write to the Free Software Foundation, Inc.,
-	51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
-*/
-
-#include <stdio.h>
+bool libretro_supports_option_categories = false;
+#include "deps/libretro-common/include/file/file_path.h"
+#include <stddef.h>
 #include <stdlib.h>
-#include <stdint.h>
 #include <string.h>
-#include <assert.h>
-
-#define STB_IMAGE_IMPLEMENTATION
+#include <stdio.h>
+#include <stdint.h>
 #include "stb_image.h"
-
-#include "libretro.h"
-#include "libretro_core_options.h"
-#include <file/file_path.h>
-#include <retro_miscellaneous.h>
-
-#include "intv.h"
 #include "cp1610.h"
-#include "memory.h"
 #include "stic.h"
 #include "psg.h"
+#define AUDIO_FREQUENCY 44100
 #include "ivoice.h"
-#include "controller.h"
+#include "libretro_core_options.h"
+#include "deps/libretro-common/include/libretro.h"
+#include "intv.h"
+#include "memory.h"
 #include "osd.h"
+#include "psg.h"
+#include "ivoice.h"
+#include "stic.h"
+#ifndef AUDIO_FREQUENCY
+#define AUDIO_FREQUENCY 44100
+#endif
+
+#ifndef PATH_MAX_LENGTH
+#define PATH_MAX_LENGTH 4096
+#endif
+
+
+extern bool libretro_supports_option_categories;
+
+// Intellivision keypad button codes
+#define K_1 0x81
+#define K_2 0x41
+#define K_3 0x21
+#define K_4 0x82
+#define K_5 0x42
+#define K_6 0x22
+#define K_7 0x84
+#define K_8 0x44
+#define K_9 0x24
+#define K_0 0x48
+#define K_C 0x88
+#define K_E 0x28
+
+#define OVERLAY_HOTSPOT_COUNT 12
+#define OVERLAY_HOTSPOT_SIZE 70
+
+typedef struct {
+    int x; // Top-left X coordinate
+    int y; // Top-left Y coordinate
+    int width;
+    int height;
+    int id; // Hotspot ID (1-12)
+    int keypad_code; // Intellivision keypad constant
+} overlay_hotspot_t;
+
+overlay_hotspot_t overlay_hotspots[OVERLAY_HOTSPOT_COUNT];
+
+// Debug: draw rectangles for each hotspot on overlay buffer
+static void debug_render_hotspots(unsigned int *buffer, int buf_width, int buf_height)
+{
+    unsigned int color = 0x80FF0000; // Semi-transparent red (ARGB)
+    for (int i = 0; i < OVERLAY_HOTSPOT_COUNT; i++) {
+        overlay_hotspot_t *h = &overlay_hotspots[i];
+        // Draw top and bottom borders
+        for (int x = h->x; x < h->x + h->width; x++) {
+            if (h->y >= 0 && h->y < buf_height && x >= 0 && x < buf_width)
+                buffer[h->y * buf_width + x] = color;
+            if ((h->y + h->height - 1) >= 0 && (h->y + h->height - 1) < buf_height && x >= 0 && x < buf_width)
+                buffer[(h->y + h->height - 1) * buf_width + x] = color;
+        }
+        // Draw left and right borders
+        for (int y = h->y; y < h->y + h->height; y++) {
+            if (y >= 0 && y < buf_height && h->x >= 0 && h->x < buf_width)
+                buffer[y * buf_width + h->x] = color;
+            if (y >= 0 && y < buf_height && (h->x + h->width - 1) >= 0 && (h->x + h->width - 1) < buf_width)
+                buffer[y * buf_width + (h->x + h->width - 1)] = color;
+        }
+    }
+}
+
+// Initialize overlay hotspots (call after overlay dimensions are known)
+static void init_overlay_hotspots(int overlay_width, int overlay_height)
+{
+    // Layout: 4 rows x 3 columns
+    // Top row (row 0) starts 183 px from top
+    // Rightmost column (col 2) is 89 px from right
+    // Each hotspot is 70x70 px
+    // Horizontal gap: 28 px, vertical gap: 29 px
+    int hotspot_w = OVERLAY_HOTSPOT_SIZE;
+    int hotspot_h = OVERLAY_HOTSPOT_SIZE;
+    int gap_x = 28;
+    int gap_y = 29;
+    int rows = 4;
+    int cols = 3;
+    int start_y = 183;
+    int right_margin = 89;
+    int start_x = overlay_width - right_margin - (hotspot_w * cols) - (gap_x * (cols - 1));
+    // Keypad mapping: 1-9 (first 3 rows), Clear-0-Enter (last row)
+    int keypad_map[12] = { K_1, K_2, K_3, K_4, K_5, K_6, K_7, K_8, K_9, K_C, K_0, K_E };
+    for (int row = 0; row < rows; row++) {
+        for (int col = 0; col < cols; col++) {
+            int idx = row * cols + col;
+            overlay_hotspots[idx].x = start_x + col * (hotspot_w + gap_x);
+            overlay_hotspots[idx].y = start_y + row * (hotspot_h + gap_y);
+            overlay_hotspots[idx].width = hotspot_w;
+            overlay_hotspots[idx].height = hotspot_h;
+            overlay_hotspots[idx].id = idx + 1;
+            overlay_hotspots[idx].keypad_code = keypad_map[idx];
+        }
+    }
+}
+
+#include "controller.h"
 
 // Workspace: game screen doubled (704x448) + overlay (704x620)
 #define WORKSPACE_WIDTH 704
@@ -108,8 +184,8 @@ static void load_controller_base(void)
                     unsigned int r = pixel[0];
                     unsigned int g = pixel[1];
                     unsigned int b = pixel[2];
-                    controller_base[y * width + x] = 
-                        (alpha << 24) | (b << 16) | (g << 8) | r;
+                        controller_base[y * width + x] = 
+                            (alpha << 24) | (r << 16) | (g << 8) | b;
                 }
             }
             
@@ -231,12 +307,16 @@ static void load_overlay_for_rom(const char* rom_path)
                     unsigned int r = pixel[0];
                     unsigned int g = pixel[1];
                     unsigned int b = pixel[2];
-                    overlay_buffer[y * width + x] = 
-                        (alpha << 24) | (b << 16) | (g << 8) | r;
+                        overlay_buffer[y * width + x] =
+                            (alpha << 24) | (r << 16) | (g << 8) | b;
                 }
             }
             
             printf("[OVERLAY] Overlay stored at native %dx%d resolution\n", overlay_width, overlay_height);
+                // Initialize overlay hotspots for touch
+                init_overlay_hotspots(overlay_width, overlay_height);
+                // Debug: render hotspot rectangles for layout check
+                debug_render_hotspots(overlay_buffer, overlay_width, overlay_height);
         }
         
         stbi_image_free(img_data);
@@ -368,7 +448,6 @@ void retro_set_input_state(retro_input_state_t fn) { InputState = fn; }
 
 struct retro_game_geometry Geometry;
 
-static bool libretro_supports_option_categories = false;
 
 int joypad0[20]; // joypad 0 state
 int joypad1[20]; // joypad 1 state

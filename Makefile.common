@@ -14,7 +14,8 @@ SOURCES_C   := \
 	$(SOURCE_DIR)/osd.c \
 	$(SOURCE_DIR)/ivoice.c \
 	$(SOURCE_DIR)/psg.c \
-	$(SOURCE_DIR)/stic.c
+	$(SOURCE_DIR)/stic.c \
+	$(SOURCE_DIR)/stb_image_impl.c
 
 # Extra sources can be provided by setting EXTRA_SOURCES when invoking make
 EXTRA_SOURCES ?=

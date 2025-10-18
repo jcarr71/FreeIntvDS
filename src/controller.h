@@ -1,3 +1,16 @@
+// Intellivision keypad button codes
+#define K_1 0x81
+#define K_2 0x41
+#define K_3 0x21
+#define K_4 0x82
+#define K_5 0x42
+#define K_6 0x22
+#define K_7 0x84
+#define K_8 0x44
+#define K_9 0x24
+#define K_0 0x48
+#define K_C 0x88
+#define K_E 0x28
 #ifndef CONTROLLER_H
 #define CONTROLLER_H
 /*
