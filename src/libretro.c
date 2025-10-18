@@ -1,10 +1,30 @@
-bool libretro_supports_option_categories = false;
+/*
+	This file is part of FreeIntv.
+
+	FreeIntv is free software; you can redistribute it and/or modify
+	it under the terms of the GNU General Public License as published by
+	the Free Software Foundation; either version 2 of the License, or
+	(at your option) any later version.
+
+	FreeIntv is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+	GNU General Public License for more details.
+
+	You should have received a copy of the GNU General Public License along
+	with FreeIntv; if not, write to the Free Software Foundation, Inc.,
+	51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+#include <stdbool.h>
 #include "deps/libretro-common/include/file/file_path.h"
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
+
+bool libretro_supports_option_categories = false;
 #include "stb_image.h"
 #include "cp1610.h"
 #include "stic.h"
@@ -47,6 +67,27 @@ extern bool libretro_supports_option_categories;
 #define OVERLAY_HOTSPOT_COUNT 12
 #define OVERLAY_HOTSPOT_SIZE 70
 
+// RetroArch utility button codes
+#define RETROARCH_MENU 1000
+#define RETROARCH_PAUSE 1001
+#define RETROARCH_REWIND 1002
+#define RETROARCH_SAVE 1003
+#define RETROARCH_LOAD 1004
+#define RETROARCH_SWAP_OVERLAY 1005
+
+#define UTILITY_BUTTON_COUNT 6
+#define UTILITY_BUTTON_WIDTH 60
+#define UTILITY_BUTTON_HEIGHT 50
+
+typedef struct {
+    int x;
+    int y;
+    int width;
+    int height;
+    const char* label;
+    int command;  // RetroArch command code
+} utility_button_t;
+
 typedef struct {
     int x; // Top-left X coordinate
     int y; // Top-left Y coordinate
@@ -57,6 +98,18 @@ typedef struct {
 } overlay_hotspot_t;
 
 overlay_hotspot_t overlay_hotspots[OVERLAY_HOTSPOT_COUNT];
+
+// Utility buttons on left side of overlay
+static utility_button_t utility_buttons[UTILITY_BUTTON_COUNT] = {
+    // Column layout: MENU, PAUSE, REWIND, SAVE, LOAD (stacked vertically on left side)
+    {10, 183, UTILITY_BUTTON_WIDTH, UTILITY_BUTTON_HEIGHT, "MENU", RETROARCH_MENU},
+    {10, 243, UTILITY_BUTTON_WIDTH, UTILITY_BUTTON_HEIGHT, "PAUSE", RETROARCH_PAUSE},
+    {10, 303, UTILITY_BUTTON_WIDTH, UTILITY_BUTTON_HEIGHT, "REWIND", RETROARCH_REWIND},
+    {10, 363, UTILITY_BUTTON_WIDTH, UTILITY_BUTTON_HEIGHT, "SAVE", RETROARCH_SAVE},
+    {10, 423, UTILITY_BUTTON_WIDTH, UTILITY_BUTTON_HEIGHT, "LOAD", RETROARCH_LOAD},
+    // Swap button at bottom - shows <> to indicate swapping overlay/utility positions
+    {10, 483, UTILITY_BUTTON_WIDTH, UTILITY_BUTTON_HEIGHT, "<>", RETROARCH_SWAP_OVERLAY}
+};
 
 // Debug: draw rectangles for each hotspot on overlay buffer
 static void debug_render_hotspots(unsigned int *buffer, int buf_width, int buf_height)
@@ -77,38 +130,6 @@ static void debug_render_hotspots(unsigned int *buffer, int buf_width, int buf_h
                 buffer[y * buf_width + h->x] = color;
             if (y >= 0 && y < buf_height && (h->x + h->width - 1) >= 0 && (h->x + h->width - 1) < buf_width)
                 buffer[y * buf_width + (h->x + h->width - 1)] = color;
-        }
-    }
-}
-
-// Initialize overlay hotspots (call after overlay dimensions are known)
-static void init_overlay_hotspots(int overlay_width, int overlay_height)
-{
-    // Layout: 4 rows x 3 columns
-    // Top row (row 0) starts 183 px from top
-    // Rightmost column (col 2) is 89 px from right
-    // Each hotspot is 70x70 px
-    // Horizontal gap: 28 px, vertical gap: 29 px
-    int hotspot_w = OVERLAY_HOTSPOT_SIZE;
-    int hotspot_h = OVERLAY_HOTSPOT_SIZE;
-    int gap_x = 28;
-    int gap_y = 29;
-    int rows = 4;
-    int cols = 3;
-    int start_y = 183;
-    int right_margin = 89;
-    int start_x = overlay_width - right_margin - (hotspot_w * cols) - (gap_x * (cols - 1));
-    // Keypad mapping: 1-9 (first 3 rows), Clear-0-Enter (last row)
-    int keypad_map[12] = { K_1, K_2, K_3, K_4, K_5, K_6, K_7, K_8, K_9, K_C, K_0, K_E };
-    for (int row = 0; row < rows; row++) {
-        for (int col = 0; col < cols; col++) {
-            int idx = row * cols + col;
-            overlay_hotspots[idx].x = start_x + col * (hotspot_w + gap_x);
-            overlay_hotspots[idx].y = start_y + row * (hotspot_h + gap_y);
-            overlay_hotspots[idx].width = hotspot_w;
-            overlay_hotspots[idx].height = hotspot_h;
-            overlay_hotspots[idx].id = idx + 1;
-            overlay_hotspots[idx].keypad_code = keypad_map[idx];
         }
     }
 }
@@ -140,6 +161,53 @@ static unsigned int* controller_base = NULL;  // Static controller image with tr
 static int controller_base_loaded = 0;
 static int controller_base_width = 446;   // Controller base actual width
 static int controller_base_height = 620;  // Controller base actual height (full overlay region)
+
+// Initialize overlay hotspots (call after controller base dimensions are known)
+// Hotspots are positioned in workspace coordinates (704px wide)
+static void init_overlay_hotspots(void)
+{
+    printf("[INIT] Initializing overlay hotspots...\n");
+    fflush(stdout);
+    
+    // Layout: 4 rows x 3 columns
+    // Top-right hotspot (button 3): 183px from top, 91px from right edge of workspace
+    // Each hotspot is 70x70 px
+    // Horizontal gap: 28 px, vertical gap: 29 px
+    int hotspot_w = OVERLAY_HOTSPOT_SIZE;
+    int hotspot_h = OVERLAY_HOTSPOT_SIZE;
+    int gap_x = 28;
+    int gap_y = 29;
+    int rows = 4;
+    int cols = 3;
+    int start_y = 183;
+    int right_margin = 91;  // Distance from right edge of workspace to right edge of rightmost hotspot
+    // Calculate starting X from right edge of workspace (704px)
+    // Rightmost hotspot ends at: WORKSPACE_WIDTH - right_margin
+    // Rightmost hotspot starts at: WORKSPACE_WIDTH - right_margin - hotspot_w
+    // Leftmost hotspot (col 0) starts at: rightmost_start - (2 * (hotspot_w + gap_x))
+    int rightmost_x = WORKSPACE_WIDTH - right_margin - hotspot_w;
+    int start_x = rightmost_x - 2 * (hotspot_w + gap_x);
+    // Keypad mapping: 1-9 (first 3 rows), Clear-0-Enter (last row)
+    int keypad_map[12] = { K_1, K_2, K_3, K_4, K_5, K_6, K_7, K_8, K_9, K_C, K_0, K_E };
+    for (int row = 0; row < rows; row++) {
+        for (int col = 0; col < cols; col++) {
+            int idx = row * cols + col;
+            overlay_hotspots[idx].x = start_x + col * (hotspot_w + gap_x);
+            overlay_hotspots[idx].y = start_y + row * (hotspot_h + gap_y);
+            overlay_hotspots[idx].width = hotspot_w;
+            overlay_hotspots[idx].height = hotspot_h;
+            overlay_hotspots[idx].id = idx + 1;
+            overlay_hotspots[idx].keypad_code = keypad_map[idx];
+            printf("[INIT] Hotspot %d: pos=(%d,%d), size=%dx%d, keypad_code=0x%02X\n",
+                   idx, overlay_hotspots[idx].x, overlay_hotspots[idx].y,
+                   overlay_hotspots[idx].width, overlay_hotspots[idx].height,
+                   overlay_hotspots[idx].keypad_code);
+        }
+    }
+    fflush(stdout);
+    printf("[INIT] Hotspot initialization complete!\n");
+    fflush(stdout);
+}
 
 // Load the static controller base image (called once at startup)
 static void load_controller_base(void)
@@ -313,8 +381,8 @@ static void load_overlay_for_rom(const char* rom_path)
             }
             
             printf("[OVERLAY] Overlay stored at native %dx%d resolution\n", overlay_width, overlay_height);
-                // Initialize overlay hotspots for touch
-                init_overlay_hotspots(overlay_width, overlay_height);
+                // Initialize overlay hotspots for touch (uses controller_base_width)
+                init_overlay_hotspots();
                 // Debug: render hotspot rectangles for layout check
                 debug_render_hotspots(overlay_buffer, overlay_width, overlay_height);
         }
@@ -347,9 +415,29 @@ static void load_overlay_for_rom(const char* rom_path)
     strncpy(current_rom_path, rom_path, sizeof(current_rom_path) - 1);
 }
 
+// Detect which hotspot (if any) is currently pressed based on controller state
+// Returns hotspot index (0-11) or -1 if none pressed
+static int detect_pressed_hotspot(int controller_value)
+{
+    // Check which keypad button is currently pressed by comparing against known codes
+    for (int i = 0; i < OVERLAY_HOTSPOT_COUNT; i++) {
+        if (overlay_hotspots[i].keypad_code == controller_value) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 // Safe dual-screen function using proven patterns
 static void render_dual_screen(void)
 {
+    static int render_count = 0;
+    if (render_count == 0) {
+        printf("[RENDER_DUAL_SCREEN] Function called - dual_screen_enabled=%d\n", dual_screen_enabled);
+        fflush(stdout);
+    }
+    render_count++;
+    
     if (!dual_screen_enabled) return;
     // Allocate workspace buffer
     if (!dual_screen_buffer) {
@@ -374,6 +462,14 @@ static void render_dual_screen(void)
         }
     }
     // --- CONTROLLER OVERLAY (Bottom: 704x620, layered) ---
+    // Fill background with deep charcoal (#1a1a1a = 0xFF1a1a1a in ARGB)
+    unsigned int background_color = 0xFF1a1a1a;
+    for (int y = 0; y < OVERLAY_HEIGHT; ++y) {
+        for (int x = 0; x < WORKSPACE_WIDTH; ++x) {
+            dual_buffer[(GAME_SCREEN_HEIGHT + y) * WORKSPACE_WIDTH + x] = background_color;
+        }
+    }
+    
     // Layer 1 (back): Game-specific overlay (centered under controller base, top-aligned, 1:1 pixels)
     // Layer 2 (front): Static controller base (right-aligned, native resolution, 1:1 pixels)
     
@@ -385,7 +481,7 @@ static void render_dual_screen(void)
     
     for (int y = 0; y < OVERLAY_HEIGHT; ++y) {
         for (int x = 0; x < WORKSPACE_WIDTH; ++x) {
-            unsigned int pixel = 0xFF000000; // Default black
+            unsigned int pixel = background_color;  // Start with background color instead of black
             
             if (x >= ctrl_base_x_start) {
                 // Controller base region: right side, aligned to right edge
@@ -421,6 +517,123 @@ static void render_dual_screen(void)
             // Left side remains black
             
             dual_buffer[(GAME_SCREEN_HEIGHT + y) * WORKSPACE_WIDTH + x] = pixel;
+        }
+    }
+    
+    // Debug: Draw hotspot guidelines on the controller overlay region (disabled - coordinates verified)
+    /*
+    // Keypad hotspots: Cyan (#00FFFF)
+    unsigned int keypad_color = 0xFFFFFF00;  // Cyan (ARGB)
+    for (int i = 0; i < OVERLAY_HOTSPOT_COUNT; i++) {
+        overlay_hotspot_t *h = &overlay_hotspots[i];
+        // Draw top and bottom borders
+        for (int x = h->x; x < h->x + h->width; x++) {
+            if (x >= 0 && x < WORKSPACE_WIDTH) {
+                int y_top = GAME_SCREEN_HEIGHT + h->y;
+                int y_bottom = GAME_SCREEN_HEIGHT + h->y + h->height - 1;
+                if (y_top >= GAME_SCREEN_HEIGHT && y_top < WORKSPACE_HEIGHT)
+                    dual_buffer[y_top * WORKSPACE_WIDTH + x] = keypad_color;
+                if (y_bottom >= GAME_SCREEN_HEIGHT && y_bottom < WORKSPACE_HEIGHT)
+                    dual_buffer[y_bottom * WORKSPACE_WIDTH + x] = keypad_color;
+            }
+        }
+        // Draw left and right borders
+        for (int y = h->y; y < h->y + h->height; y++) {
+            if (y >= 0 && y < OVERLAY_HEIGHT) {
+                int y_pos = GAME_SCREEN_HEIGHT + y;
+                if (y_pos >= GAME_SCREEN_HEIGHT && y_pos < WORKSPACE_HEIGHT) {
+                    if (h->x >= 0 && h->x < WORKSPACE_WIDTH)
+                        dual_buffer[y_pos * WORKSPACE_WIDTH + h->x] = keypad_color;
+                    int x_right = h->x + h->width - 1;
+                    if (x_right >= 0 && x_right < WORKSPACE_WIDTH)
+                        dual_buffer[y_pos * WORKSPACE_WIDTH + x_right] = keypad_color;
+                }
+            }
+        }
+    }
+    */
+    
+    // Debug: Draw utility button guidelines on left side
+    // Utility buttons: Amber/Gold (#FFD700)
+    unsigned int utility_color = 0xFFFFD700;  // Amber/Gold (ARGB)
+    for (int i = 0; i < UTILITY_BUTTON_COUNT; i++) {
+        utility_button_t* btn = &utility_buttons[i];
+        // Draw top and bottom borders
+        for (int x = btn->x; x < btn->x + btn->width; x++) {
+            if (x >= 0 && x < WORKSPACE_WIDTH) {
+                int y_top = GAME_SCREEN_HEIGHT + btn->y;
+                int y_bottom = GAME_SCREEN_HEIGHT + btn->y + btn->height - 1;
+                if (y_top >= GAME_SCREEN_HEIGHT && y_top < WORKSPACE_HEIGHT)
+                    dual_buffer[y_top * WORKSPACE_WIDTH + x] = utility_color;
+                if (y_bottom >= GAME_SCREEN_HEIGHT && y_bottom < WORKSPACE_HEIGHT)
+                    dual_buffer[y_bottom * WORKSPACE_WIDTH + x] = utility_color;
+            }
+        }
+        // Draw left and right borders
+        for (int y = btn->y; y < btn->y + btn->height; y++) {
+            if (y >= 0 && y < OVERLAY_HEIGHT) {
+                int y_pos = GAME_SCREEN_HEIGHT + y;
+                if (y_pos >= GAME_SCREEN_HEIGHT && y_pos < WORKSPACE_HEIGHT) {
+                    if (btn->x >= 0 && btn->x < WORKSPACE_WIDTH)
+                        dual_buffer[y_pos * WORKSPACE_WIDTH + btn->x] = utility_color;
+                    int x_right = btn->x + btn->width - 1;
+                    if (x_right >= 0 && x_right < WORKSPACE_WIDTH)
+                        dual_buffer[y_pos * WORKSPACE_WIDTH + x_right] = utility_color;
+                }
+            }
+        }
+    }
+    
+    // Highlight hotspots - for both keyboard testing and active controller input
+    // First, check if a key is pressed on right controller (player 0, port 0x1FE)
+    int current_key = Memory[0x1FE] ^ 0xFF;  // Invert because pressed bits are 1 in Memory
+    
+    // Look for currently pressed key
+    int active_hotspot = -1;
+    for (int i = 0; i < OVERLAY_HOTSPOT_COUNT; i++) {
+        if ((current_key & overlay_hotspots[i].keypad_code) == overlay_hotspots[i].keypad_code) {
+            active_hotspot = i;
+            break;
+        }
+    }
+    
+    // Highlight the active hotspot if any button is pressed
+    if (active_hotspot >= 0 && active_hotspot < OVERLAY_HOTSPOT_COUNT) {
+        overlay_hotspot_t *h = &overlay_hotspots[active_hotspot];
+        printf("[HOTSPOT_RENDER] Rendering highlight for hotspot %d at (%d,%d) size %dx%d\n",
+               active_hotspot, h->x, h->y, h->width, h->height);
+        
+        // Draw semi-transparent glow/fill over the hotspot
+        unsigned int highlight_color = 0xAA00FF00;  // Semi-transparent yellow/lime (ARGB)
+        
+        for (int y = h->y; y < h->y + h->height; y++) {
+            if (y >= 0 && y < OVERLAY_HEIGHT) {
+                int y_pos = GAME_SCREEN_HEIGHT + y;
+                if (y_pos >= GAME_SCREEN_HEIGHT && y_pos < WORKSPACE_HEIGHT) {
+                    for (int x = h->x; x < h->x + h->width; x++) {
+                        if (x >= 0 && x < WORKSPACE_WIDTH) {
+                            // Blend highlight with existing pixel
+                            unsigned int existing = dual_buffer[y_pos * WORKSPACE_WIDTH + x];
+                            unsigned int alpha = (highlight_color >> 24) & 0xFF;
+                            unsigned int inv_alpha = 255 - alpha;
+                            
+                            unsigned int r = ((highlight_color >> 16) & 0xFF);
+                            unsigned int g = ((highlight_color >> 8) & 0xFF);
+                            unsigned int b = (highlight_color & 0xFF);
+                            
+                            unsigned int existing_r = ((existing >> 16) & 0xFF);
+                            unsigned int existing_g = ((existing >> 8) & 0xFF);
+                            unsigned int existing_b = (existing & 0xFF);
+                            
+                            unsigned int blended_r = (r * alpha + existing_r * inv_alpha) / 255;
+                            unsigned int blended_g = (g * alpha + existing_g * inv_alpha) / 255;
+                            unsigned int blended_b = (b * alpha + existing_b * inv_alpha) / 255;
+                            
+                            dual_buffer[y_pos * WORKSPACE_WIDTH + x] = 0xFF000000 | (blended_r << 16) | (blended_g << 8) | blended_b;
+                        }
+                    }
+                }
+            }
         }
     }
     
@@ -485,8 +698,67 @@ static void Keyboard(bool down, unsigned keycode,
       uint32_t character, uint16_t key_modifiers)
 {
 	/* Keyboard Input */
+	// Log all keyboard events to understand what's happening
+	printf("[KEYBOARD] CALLBACK: down=%d, keycode=%u, character=%u (0x%02X), modifiers=0x%04X\n",
+	       down, keycode, character, character, key_modifiers);
+	fflush(stdout);
+	
 	keyboardDown = down;
-	keyboardChange = true; 
+	keyboardChange = true;
+	
+	// Hotspot testing via keyboard (temporary, for Windows testing)
+	// Try BOTH character codes AND keycodes
+	if (down) {  // Only on key down
+		// First try character codes (ASCII)
+		int hotspot_idx = -1;
+		switch (character)
+		{
+			case 49: hotspot_idx = 0; break;  // '1' -> hotspot 0
+			case 50: hotspot_idx = 1; break;  // '2' -> hotspot 1
+			case 51: hotspot_idx = 2; break;  // '3' -> hotspot 2
+			case 52: hotspot_idx = 3; break;  // '4' -> hotspot 3
+			case 53: hotspot_idx = 4; break;  // '5' -> hotspot 4
+			case 54: hotspot_idx = 5; break;  // '6' -> hotspot 5
+			case 55: hotspot_idx = 6; break;  // '7' -> hotspot 6
+			case 56: hotspot_idx = 7; break;  // '8' -> hotspot 7
+			case 57: hotspot_idx = 8; break;  // '9' -> hotspot 8
+			case 48: hotspot_idx = 10; break; // '0' -> hotspot 10
+			case 91: hotspot_idx = 9; break;  // '[' -> CLR (hotspot 9)
+			case 93: hotspot_idx = 11; break; // ']' -> ENT (hotspot 11)
+			case 99: hotspot_idx = 9; break;  // 'c' -> CLR (alternative)
+			case 67: hotspot_idx = 9; break;  // 'C' -> CLR (alternative)
+			case 101: hotspot_idx = 11; break; // 'e' -> ENT (alternative)
+			case 69: hotspot_idx = 11; break; // 'E' -> ENT (alternative)
+			case 59: hotspot_idx = 9; break;  // ';' -> CLR (alternative)
+			case 39: hotspot_idx = 11; break; // '\'' -> ENT (alternative)
+			case 27: hotspot_idx = -1; break; // ESC -> clear
+		}
+		
+		// Also try keycodes if character didn't match
+		if (hotspot_idx == -1) {
+			switch (keycode)
+			{
+				case 49: hotspot_idx = 0; break;  // '1'
+				case 50: hotspot_idx = 1; break;  // '2'
+				case 51: hotspot_idx = 2; break;  // '3'
+				case 52: hotspot_idx = 3; break;  // '4'
+				case 53: hotspot_idx = 4; break;  // '5'
+				case 54: hotspot_idx = 5; break;  // '6'
+				case 55: hotspot_idx = 6; break;  // '7'
+				case 56: hotspot_idx = 7; break;  // '8'
+				case 57: hotspot_idx = 8; break;  // '9'
+				case 48: hotspot_idx = 10; break; // '0'
+				case 26: hotspot_idx = 9; break;  // might be '[' on some layouts
+				case 27: hotspot_idx = 11; break; // might be ']' on some layouts
+				case 219: hotspot_idx = 9; break;  // Windows VK_OEM_4 = '['
+				case 221: hotspot_idx = 11; break; // Windows VK_OEM_6 = ']'
+				case 67: hotspot_idx = 9; break;  // 'C' for Clear
+				case 69: hotspot_idx = 11; break; // 'E' for Enter
+			}
+		}
+	}
+	
+	// Standard controller input mapping
 	switch (character)
 	{
 		case 48: keyboardState = keypadStates[10]; break; // 0
@@ -825,6 +1097,30 @@ static void render_button_labels(unsigned int* buffer, int buf_width)
     }
 }
 
+// Render utility buttons on left side of overlay
+static void render_utility_buttons(unsigned int* buffer, int buf_width, int buf_height)
+{
+    // Semi-transparent blue for outlines (utility buttons)
+    unsigned int outline_color = 0xB380FF00;  // Blue tint
+    unsigned int text_color = 0xFFFFFFFF;     // White text
+    
+    for (int i = 0; i < UTILITY_BUTTON_COUNT; i++) {
+        utility_button_t* btn = &utility_buttons[i];
+        
+        // Draw button outline
+        draw_button_outline(buffer, buf_width, btn->x, btn->y, btn->width, btn->height,
+                          outline_color, 1);
+        
+        // Draw button label (smaller for utility buttons)
+        int center_x = btn->x + btn->width / 2;
+        int center_y = btn->y + btn->height / 2;
+        
+        // For shorter labels, draw text manually (simple approach)
+        // Just center the label in the button area
+        draw_text_centered(buffer, buf_width, center_x, center_y, btn->label, text_color);
+    }
+}
+
 void retro_run(void)
 {
 	int c, i, j, k, l;
@@ -894,6 +1190,8 @@ void retro_run(void)
 	joypad1[17] = InputState(1, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y);
 	joypad1[18] = InputState(1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3);
 	joypad1[19] = InputState(1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3);
+
+	// HOTSPOT TESTING: Use gamepad buttons to highlight specific hotspots
 
 	// Pause
 	if((joypad0[8]==1 && joypre0[8]==0) || (joypad1[8]==1 && joypre1[8]==0))
