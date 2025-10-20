@@ -1,0 +1,72 @@
+# Development Environment Configuration
+# This file documents the development setup for the FreeIntvProjects workspace
+
+## Platform Information
+PLATFORM=windows
+OS_VERSION=Windows 10/11 (64-bit)
+ARCHITECTURE=x86_64
+
+## Compiler Toolchain
+COMPILER=MinGW64
+COMPILER_PATH=C:\mingw64
+GCC_VERSION=15.2.0
+MINGW_MAKE=C:\mingw64\bin\mingw32-make.exe
+
+## Build System
+BUILD_TOOL=mingw32-make
+BUILD_COMMAND=mingw32-make platform=win
+
+## Shell Environment
+SHELL=PowerShell
+POWERSHELL_VERSION=5.1
+
+## Environment Variables
+# Add MinGW64 to PATH for builds:
+# $env:PATH += ";C:\mingw64\bin"
+
+## Project Paths
+WORKSPACE=c:\Users\Jason\Documents\Visual Studio\FreeIntvProjects
+FREEINTVDS_PROJECT=FreeIntvDS
+FREEINTV_WORKING_KEYPAD=FreeIntvWorkingKeypad
+
+## Notes for Agents
+- This is a Windows-only development environment
+- Use PowerShell commands, not Unix/Linux commands
+- Use backslashes (\) for paths, not forward slashes
+- MinGW64 must be available in PATH for compilation
+- File operations should use PowerShell cmdlets (Get-Item, Remove-Item, etc.)
+- Commands like 'make', 'head', 'tail' require Unix tools (unavailable by default)
+- Use native Windows commands (del, dir, type) or PowerShell equivalents
+
+## Key Commands for This Environment
+### Add MinGW to PATH
+$env:PATH += ";C:\mingw64\bin"
+
+### Compile FreeIntvWorkingKeypad
+cd "c:\Users\Jason\Documents\Visual Studio\FreeIntvProjects\FreeIntvWorkingKeypad"
+mingw32-make platform=win
+
+### Clean Build
+cd "c:\Users\Jason\Documents\Visual Studio\FreeIntvProjects\FreeIntvWorkingKeypad"
+Get-Item -Path src\*.o -ErrorAction SilentlyContinue | Remove-Item -Force
+Get-Item -Path src\deps\*\*.o -ErrorAction SilentlyContinue | Remove-Item -Force -Recurse
+Get-Item -Path *.dll -ErrorAction SilentlyContinue | Remove-Item -Force
+
+### Git Operations
+cd "c:\Users\Jason\Documents\Visual Studio\FreeIntvProjects"
+git status
+git branch
+git add -A
+git commit -m "message"
+git push origin branch-name
+
+## IDE/Tools
+- Visual Studio Code (primary editor)
+- MinGW64 (GCC toolchain)
+- Git (version control)
+- RetroArch (testing target for FreeIntv)
+
+## Project Status
+- FreeIntvDS: Complete vertical layout dual-screen system
+- FreeIntvWorkingKeypad: Working horizontal keypad layout (compiled and tested)
+- Both branches active in FreeIntvProjects repository on GitHub

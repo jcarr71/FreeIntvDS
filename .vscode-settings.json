@@ -1,0 +1,21 @@
+# VS Code Workspace Settings for Windows Development
+# Place this content in .vscode/settings.json for the workspace
+
+{
+  "terminal.integrated.defaultProfile.windows": "PowerShell",
+  "terminal.integrated.profiles.windows": {
+    "PowerShell": {
+      "path": "powershell.exe",
+      "args": ["-NoExit", "-Command", "$env:PATH += ';C:\\mingw64\\bin'"]
+    }
+  },
+  "files.eol": "\r\n",
+  "files.encoding": "utf8",
+  "[c]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools",
+    "editor.formatOnSave": false
+  },
+  "makefile.configureOnEdit": false,
+  "makefile.configureOnOpen": false,
+  "search.followSymlinks": false
+}
