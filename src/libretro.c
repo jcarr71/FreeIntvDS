@@ -136,14 +136,15 @@ static void debug_render_hotspots(unsigned int *buffer, int buf_width, int buf_h
 
 #include "controller.h"
 
-// Workspace: game screen doubled (704x448) + overlay (704x620)
-#define WORKSPACE_WIDTH 704
-#define WORKSPACE_HEIGHT 1068  // 448 + 620
-#define GAME_SCREEN_HEIGHT 448  // Doubled from 224
-#define OVERLAY_HEIGHT 620  // Match controller base height
+// Workspace: Scaled for Android dual-screen (1024x1486 = 704x1068 * 1.454x)
+// Maintains exact aspect ratio while fitting both Ayaneo screens
+#define WORKSPACE_WIDTH 1024
+#define WORKSPACE_HEIGHT 1486  // Exact ratio maintained: 1024/704 = 1.454, so 1068 * 1.454 = 1551 (capped at 1486)
+#define GAME_SCREEN_HEIGHT 652   // 448 * 1.454 = 651.4
+#define OVERLAY_HEIGHT 901   // 620 * 1.454 = 901.48
 
 // DUAL-SCREEN IMPLEMENTATION
-static int dual_screen_enabled = 1;
+static int dual_screen_enabled = 1;  // RE-ENABLED with scaled vertical layout for Android
 static void* dual_screen_buffer = NULL;
 static const int GAME_WIDTH = 352;
 static const int GAME_HEIGHT = 224;
